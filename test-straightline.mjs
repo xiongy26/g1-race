@@ -54,9 +54,9 @@ async function raceRobot(seed, laneY, speed) {
   return { x: robot.data.qpos[0], yErr: robot.data.qpos[1] - laneY, t: 60, ok: false };
 }
 
-// 6 条道各跑一台, 速度覆盖 0.5~1.0 m/s
+// 6 条道各跑一台, 速度覆盖 0.5~1.55 m/s(全程稳定包线, 上限见 test-speed-sweep.mjs)
 const lanes = [-3.375, -2.025, -0.675, 0.675, 2.025, 3.375];
-const speeds = [0.5, 0.7, 0.85, 0.9, 0.95, 1.0];
+const speeds = [0.5, 0.8, 1.0, 1.2, 1.4, 1.55];
 let pass = true;
 console.log('直线跑回归测试(航向保持外环生效):');
 for (let i = 0; i < 6; i++) {

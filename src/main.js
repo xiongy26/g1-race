@@ -34,7 +34,7 @@ const app = {
   camMode: 'leader',
   simSpeed: 1,
   paused: false,
-  baseSpeed: 0.9,  // m/s(该策略训练范围约 0~1.0)
+  baseSpeed: 1.5,  // m/s(实测该策略 1.55 内各种子稳定, 1.60+ 起跑段失稳, 见 test-speed-sweep.mjs)
   robotCount: 4,
   seed: 20260923,
   rtf: 0,          // realtime factor
@@ -93,8 +93,8 @@ function buildRobots(n) {
 function applySpeeds() {
   const rng = makeRng(app.seed ^ 0x9e3779b9);
   for (const r of app.robots) {
-    // 每台机器人的目标速度略有差别(像真实比赛的不同配速策略), 并限制在策略训练范围内
-    r.targetSpeed = Math.max(0.2, Math.min(1.0, app.baseSpeed + (rng() * 2 - 1) * 0.1));
+    // 每台机器人的目标速度略有差别(像真实比赛的不同配速策略), 上限压在实测稳定边界内
+    r.targetSpeed = Math.max(0.2, Math.min(1.55, app.baseSpeed + (rng() * 2 - 1) * 0.1));
     if (app.race.state === 'racing') r.cmd[0] = r.targetSpeed;
   }
 }
@@ -148,8 +148,9 @@ function updateCamera(dt) {
   app.controls.enabled = false;
   let want, aim;
   if (app.camMode === 'leader') {
-    want = new THREE.Vector3(lx - 5.0, ly * 0.4, 2.4);
-    aim = new THREE.Vector3(lx + 2.2, ly * 0.5, 0.9);
+    // 低机位近距跟随: 地面掠过感更强, 更像转播短跑镜头
+    want = new THREE.Vector3(lx - 3.8, ly * 0.35, 1.7);
+    aim = new THREE.Vector3(lx + 2.6, ly * 0.5, 0.85);
   } else { // 全景
     want = new THREE.Vector3(lx + 1.5, -12.5, 8.0);
     aim = new THREE.Vector3(lx + 2, 0, 0.8);
