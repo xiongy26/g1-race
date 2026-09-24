@@ -34,7 +34,7 @@ await session.load(new Uint8Array(fs.readFileSync(path.join(ROOT, 'assets/policy
 
 const SIM_TIME = 45; // 每档最多仿 45s(25m @ 0.55m/s 也能完赛)
 
-// cmdRamp: 指令斜坡 m/s²; 0 表示阶跃
+// cmdRamp: >0 按该斜率 m/s² 缓升; <0 两段式软起步(先 1.2 m/s 起步再按 |ramp| m/s² 缓升); 0 阶跃
 async function raceRobot(seed, laneY, targetSpeed, cmdRamp) {
   const robot = { data: new mj.MjData(sim.model) };
   const runner = new PolicyRunner();
@@ -45,6 +45,7 @@ async function raceRobot(seed, laneY, targetSpeed, cmdRamp) {
   for (let s = 0; s < N; s++) {
     if (s >= 60) { // 前 1.2s 站立(对应倒计时), 之后发令
       if (cmdRamp > 0) cmdNow = Math.min(targetSpeed, cmdNow + cmdRamp * 0.02);
+      else if (cmdRamp < 0) cmdNow = cmdNow === 0 ? 1.2 : Math.min(targetSpeed, cmdNow + (-cmdRamp) * 0.02);
       else cmdNow = targetSpeed;
     }
     cmd[0] = cmdNow;
@@ -78,7 +79,7 @@ console.log(`速度扫描: 指令 ${speeds.join(' / ')} m/s, 斜坡 ${ramps.join
 console.log('mode     | cmd   | 完赛  | 用时    | 均速    | 峰值速度 | 横向偏差 | 结局');
 for (const v of speeds) {
   for (const ramp of ramps) {
-    const mode = ramp > 0 ? `ramp${String(ramp).padEnd(4).slice(0, 4)}` : 'step  ';
+    const mode = ramp > 0 ? `ramp${String(ramp).padEnd(4).slice(0, 4)}` : (ramp < 0 ? 'stage ' : 'step  ');
     const results = [];
     for (const sd of seeds) {
       const r = await raceRobot(sd, -0.675, v, ramp);

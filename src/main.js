@@ -34,7 +34,7 @@ const app = {
   camMode: 'leader',
   simSpeed: 1,
   paused: false,
-  baseSpeed: 1.5,  // m/s(实测该策略 1.55 内各种子稳定, 1.60+ 起跑段失稳, 见 test-speed-sweep.mjs)
+  baseSpeed: 1.55, // m/s(实测该策略的硬极限: 1.55 各种子稳定, 1.60+ 阶跃/斜坡/软起步均失稳, 见 test-speed-sweep.mjs)
   robotCount: 4,
   seed: 20260923,
   rtf: 0,          // realtime factor
