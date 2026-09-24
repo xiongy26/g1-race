@@ -40,6 +40,7 @@ node server.js 8137        # 或任意静态服务器: python -m http.server 813
 │    · 速度策略: 输入 obs[1×480], 输出 action[1×29], 50 Hz 闭环
 │    · obs(96 维) = [机体角速度×0.2, 重力投影, 速度指令, 关节角-默认, 关节角速度×0.05, 上次动作]
 │    · 5 帧堆叠按"分量组优先"打包成 480 维; 动作→目标角 = 0.25×a + 默认站姿
+│    · 航向保持外环(纯跟踪): 每周期把"瞄准本车道前方 2m 点"的航向误差转成 yaw 角速度指令 cmd[2]
 ├─ three.js
 │    · 机器人网格经 mjv_updateScene 管线取每个 geom 的最终世界位姿
 │    · 程序化赛道纹理(道次、起点线、方格旗终点、里程标)、终点拱门、阴影
@@ -48,6 +49,12 @@ node server.js 8137        # 或任意静态服务器: python -m http.server 813
 
 ### 已知实现要点(踩坑记录)
 
+- **速度策略没有航向反馈(会导致跑出跑道)**:策略只跟踪机体系速度指令,对世界系航向
+  毫无反馈;`cmd=(vx,0,0)` 下策略/模型的固有配平偏置让机器人恒定画弧,实测 25m 横向
+  偏出 10~15m(零初始扰动也一样,方向恒定)。修复:比赛逻辑每个策略周期用纯跟踪外环
+  把航向误差转成 yaw 角速度指令 `cmd[2]`(见 `policy.js` 的 `STEER`/`steerCmd`,
+  kp=2.0, 前视 2.0m),实测 0.5~1.0 m/s 全程横向偏差 <0.15m。可用
+  `node test-straightline.mjs` 回归验证。
 - **`mjvGeom.dataid` 损坏**:本 WASM 构建对 mesh geom 返回 2 倍的错误 dataid,必须用
   `model.geom_dataid[mjvGeom.objid]` 还原真实 mesh id,否则 STL 错配、机器人"炸开"。
 - **网格加载**:官方绑定需用 `MjVFS.addBuffer('meshes/xxx.STL', bytes)` +
@@ -62,6 +69,7 @@ node server.js 8137        # 或任意静态服务器: python -m http.server 813
 g1-race/
 ├── index.html            # UI / importmap / 启动遮罩
 ├── server.js             # 极简静态服务器(node server.js [port])
+├── test-straightline.mjs # 无头回归测试: Node 里跑闭环验证直线跑(node test-straightline.mjs)
 ├── src/
 │   ├── main.js           # 启动流程、主循环(仿真/渲染解耦)、相机、HUD
 │   ├── policy.js         # 策略观测构建、ONNX 会话封装、PD 控制

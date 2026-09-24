@@ -4,7 +4,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import loadMujoco from '../vendor/mujoco/mujoco.js';
-import { CFG, POLICY_DT, PolicyRunner, PolicySession } from './policy.js';
+import { CFG, POLICY_DT, PolicyRunner, PolicySession, steerCmd } from './policy.js';
 import { Sim, buildSceneXml, makeRng } from './sim.js';
 import { buildTrack, addLights, RobotVisual, TEAM_COLORS, laneY, MAX_LANES } from './scene.js';
 import { Race, RACE_TIMEOUT } from './race.js';
@@ -107,9 +107,12 @@ let realAccum = 0;
 
 async function stepOnce() {
   const robots = app.robots;
-  // 构建观测
+  // 构建观测(比赛中先更新航向外环, 再喂观测)
+  const steerOn = app.race.state === 'racing' || app.race.state === 'finished';
   for (const r of robots) {
     if (r.fallen) continue;
+    // 纯跟踪: 瞄准本车道前方点 -> yaw 角速度指令; 倒计时/就绪阶段不转向
+    r.cmd[2] = steerOn ? steerCmd(r.sim.data.qpos, r.laneY) : 0;
     r.runner.pushObs(r.runner.buildObs(r.sim.data.qpos, r.sim.data.qvel, r.cmd));
   }
   // 推理
@@ -425,6 +428,7 @@ async function main() {
         const q = r.sim.data.qpos;
         return {
           x: +(q[0] ?? NaN).toFixed?.(2) ?? NaN,
+          y: +(q[1] ?? NaN).toFixed?.(2) ?? NaN,
           z: +(q[2] ?? NaN).toFixed?.(2) ?? NaN,
           v: +(r.sim.data.qvel[0] ?? NaN).toFixed?.(2) ?? NaN,
           qposLen: q.length,

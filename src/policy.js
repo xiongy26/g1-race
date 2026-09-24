@@ -3,6 +3,7 @@
 //   obs(96) = [基础角速度*0.2(3), 重力投影(3), 指令(3), 关节位置-默认(29), 关节速度*0.05(29), 上次动作(29)]
 //   输入 = 组优先堆叠 5 帧: [角速度x5, 重力x5, 指令x5, 位置x5, 速度x5, 动作x5] = 480 维
 //   输出 = 29 维缩放动作, 目标关节角 = 动作*0.25 + 默认角(策略顺序), 500Hz 关节空间 PD。
+// 比赛直道保持: 上层纯跟踪外环把航向/横向误差转成 cmd[2](yaw 角速度), 见 STEER。
 
 export const CFG = {
   timestep: 0.002,
@@ -37,6 +38,32 @@ function gravityOrientation(qw, qx, qy, qz) {
     -2 * (qz * qy + qw * qx),
     1 - 2 * (qw * qw + qz * qz),
   ];
+}
+
+// ---------- 航向保持外环(纯跟踪式) ----------
+// 速度策略只跟踪机体系速度指令, 对世界系航向没有任何反馈: 实测 cmd=(vx,0,0) 直行
+// 25m 会系统性偏出 10m+(策略/模型的固有配平偏置)。外环瞄准本车道前方一点,
+// 把航向误差转成策略的偏航角速度指令 cmd[2], 补上这个反馈。
+export const STEER = {
+  kp: 2.0,        // 航向误差 -> yaw 角速度指令(rad/s)
+  lookahead: 2.0, // 前视距离(m): 兼顾收敛横向偏差
+  maxYawCmd: 1.0, // 策略训练范围内的 yaw 指令上限
+};
+
+// 机体系 +x(前向)轴的世界系偏航角, 由机体四元数直接构造
+export function headingYaw(qw, qx, qy, qz) {
+  return Math.atan2(2 * (qx * qy + qw * qz), 1 - 2 * (qy * qy + qz * qz));
+}
+
+export function wrapPi(a) {
+  return Math.atan2(Math.sin(a), Math.cos(a));
+}
+
+// 由位姿计算航向保持的 yaw 角速度指令(q 为 mujoco qpos)
+export function steerCmd(q, laneY, steer = STEER) {
+  const desired = Math.atan2(laneY - q[1], steer.lookahead);
+  const err = wrapPi(desired - headingYaw(q[3], q[4], q[5], q[6]));
+  return Math.max(-steer.maxYawCmd, Math.min(steer.maxYawCmd, steer.kp * err));
 }
 
 // 单台机器人的策略运行状态(帧堆叠 + 上次动作 + 位置目标)
