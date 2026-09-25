@@ -153,18 +153,19 @@ function applySpeeds() {
   const scale = app.baseSpeed / 1.55;
   for (const r of app.robots) {
     r.targetSpeed = Math.min(r.species.maxV, Math.max(0.1, r.species.maxV * scale * (1 + (rng() * 2 - 1) * 0.06)));
-    if (app.race.state === 'racing') r.curVx = r.targetSpeed;
+    // 不直接跳变 curVx: 比赛中拖动滑块时由 stepOnce 的斜率限幅平滑过渡, 避免指令阶跃摔机
   }
 }
 
 // ---------- 仿真步进(每 TICK_DT 一次) ----------
 async function stepOnce() {
   const robots = app.robots;
-  const steerOn = app.race.state === 'racing' || app.race.state === 'finished';
+  // 仅比赛/完赛阶段给前进指令, 就绪/倒计时一律 cmd=0(防抢跑)
+  const running = app.race.state === 'racing' || app.race.state === 'finished';
 
   for (const r of robots) {
     if (r.fallen) continue;
-    const d = r.targetSpeed - r.curVx;
+    const d = (running ? r.targetSpeed : 0) - r.curVx;
     r.curVx += Math.max(-2.5 * TICK_DT, Math.min(2.5 * TICK_DT, d));
   }
 
@@ -178,7 +179,7 @@ async function stepOnce() {
       const q = r.sim.data.qpos;
       r.cmd[0] = r.curVx;
       r.cmd[1] = 0;
-      r.cmd[2] = steerOn ? Math.max(-(r.species.yawCap ?? 1.0), Math.min(r.species.yawCap ?? 1.0, steerCmd(q, r.laneY))) : 0;
+      r.cmd[2] = running ? Math.max(-(r.species.yawCap ?? 1.0), Math.min(r.species.yawCap ?? 1.0, steerCmd(q, r.sim.data.qvel, r.laneY, r.species.steer))) : 0;
       r.runner.buildAndPushObs(q, r.sim.data.qvel, r.cmd, r.runner.period);
       due.push(r);
     }

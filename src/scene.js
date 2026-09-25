@@ -8,6 +8,7 @@
 // 损坏值(真实值的 2 倍), 需要用 geom_dataid[objid] 还原真实 mesh id。
 
 import * as THREE from 'three';
+import { FENCE_INNER_Y, FENCE_CENTER_X, FENCE_HALF_LEN, FENCE_HALF_T } from './sim.js';
 
 export const FINISH_X = 25;      // 终点线
 export const LANE_WIDTH = 1.35;  // 道宽
@@ -102,6 +103,27 @@ export function buildTrack(scene) {
   const ground = new THREE.Mesh(groundGeo, groundMat);
   ground.position.set(15, 0, -0.02);
   scene.add(ground);
+
+  // 赛道两侧红白路缘(与 MuJoCo 里的 race_fence 物理挡墙一一对应)
+  const kerbCv = document.createElement('canvas');
+  kerbCv.width = 256; kerbCv.height = 32;
+  const kg = kerbCv.getContext('2d');
+  for (let i = 0; i < 16; i++) {
+    kg.fillStyle = i % 2 === 0 ? '#d43a2f' : '#f5f0e6';
+    kg.fillRect(i * 16, 0, 16, 32);
+  }
+  const kerbTex = new THREE.CanvasTexture(kerbCv);
+  kerbTex.colorSpace = THREE.SRGBColorSpace;
+  kerbTex.wrapS = THREE.RepeatWrapping;
+  kerbTex.repeat.set(FENCE_HALF_LEN * 2 / 2, 1);
+  const kerbGeo = new THREE.BoxGeometry(FENCE_HALF_LEN * 2, FENCE_HALF_T * 2 + 0.02, 0.22);
+  const kerbMat = new THREE.MeshPhongMaterial({ map: kerbTex, shininess: 6 });
+  for (const side of [-1, 1]) {
+    const kerb = new THREE.Mesh(kerbGeo, kerbMat);
+    kerb.position.set(FENCE_CENTER_X, side * (FENCE_INNER_Y + FENCE_HALF_T), 0.11);
+    kerb.receiveShadow = true;
+    scene.add(kerb);
+  }
 
   // 终点拱门
   const arch = new THREE.Group();

@@ -1,13 +1,16 @@
 // 机器人物种注册表 —— 只收录"官方模型文件 + 官方策略模型"齐备的真实机器人。
+
+import { makeSteer } from './policy.js';
 //
 // 每个物种:
 //   xmlFile/meshesDir  磁盘上的 MJCF 模型资产(官方仓库原版, 仅运行时打最小补丁)
 //   policyFile         官方发布的策略权重(ONNX; TorchScript 权重已事先转换)
 //   contract           该策略的观测/动作/PD 契约(逐条对齐官方部署脚本/配置)
 //   dt×decim           仿真步长与策略频率(与官方部署一致)
+//   steer              航向保持外环参数(不填用 policy.js STEER 默认; 见 makeSteer)
 // 模型与策略来源(调研定案 2026-09):
 //   G1   unitree 官方 MJCF(unitree_ros) + 策略 RoboCubPilot/g1_deploy_mujoco
-//   SA01 众擎 engineai_legged_gym(官方 MJCF+STL+ONNX+sim2sim 脚本)
+//   PM01 众擎 engineai_legged_gym(官方 MJCF+STL+ONNX+sim2sim 脚本)
 //   T1   Booster booster_gym(官方 MJCF+T1.pt 权重+T1.yaml 部署配置)
 // 落选记录: 智元 A2(官方仅 X2 URDF 无策略)、优必选 Walker S2(无公开模型+策略对)、
 //   MicroDuck(无公开资产)、傅里叶 GR-1/N1(有模型有权重但 obs 契约锁在闭源 SDK/
@@ -111,7 +114,11 @@ export const SPECIES = [
     fallZ: 0.35,
     labelH: 1.35,
     visGroups: [2],
-    maxV: 0.8,
+    // 训练指令范围 vx 0.5~0.8(官方 env.yaml ranges, 观测 scale=null 原始值),
+    // sim2sim 下策略只跟踪六成(0.8 指令实跑 ~0.52)。实测更高指令:
+    // 1.0/1.1 稳定完赛(实跑 0.68~0.77), 1.2 起步必摔, ≥1.11 随机中段摔。
+    // maxV=1.0: 比赛 ±6% 速度抖动后最坏 1.06, 留足安全边际(实跑 ~0.68)。
+    maxV: 1.0,
     noise: 0.01,
     yawCap: 0.6,
     wrapScene: false,
@@ -134,6 +141,9 @@ export const SPECIES = [
     visGroups: [1],
     maxV: 1.2,
     noise: 0.01,
+    // T1 策略的 yaw 跟踪迟缓且超调大, 默认外环增益会画 ~2s 周期的 S 形(±0.4m),
+    // 实测降低航向增益后 6 组车道/种子最大偏差 0.25~0.35m(默认增益 0.33~0.58m)
+    steer: makeSteer({ kpYaw: 1.5, kdYaw: 0.2 }),
     wrapScene: false,
     // 官方地面 condim=1(无摩擦) -> 换成带摩擦的普通接触
     xmlPatches: [

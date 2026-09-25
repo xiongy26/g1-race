@@ -42,7 +42,7 @@ async function raceRobot(seed, laneY, speed) {
   for (let s = 0; s < Math.ceil(60 / TICK); s++) {
     t += TICK;
     if (s === 0 || s === 60) cmd[0] = speed;
-    cmd[2] = steerCmd(robot.data.qpos, laneY);
+    cmd[2] = steerCmd(robot.data.qpos, robot.data.qvel, laneY);
     acc += TICK;
     if (acc >= runner.period - 1e-9) {
       acc -= runner.period;

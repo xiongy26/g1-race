@@ -7,13 +7,35 @@ import { SPECIES } from './robots.js';
 
 export const LANE_WIDTH = 1.35;
 
+// 赛道两侧物理护栏(挡墙): 兜底防止机器人冲出跑道(摔倒/打滑/极端漂移时).
+// 内侧面 = 红色跑道边(3 条道)外移 0.15m, 正常贴道跑(偏差 <0.5m)永不接触.
+// 视觉上对应 scene.js 的红白路缘, geom 为 group 0(MjvOption 默认隐藏).
+export const FENCE_INNER_Y = (6 * LANE_WIDTH) / 2 + 0.15; // 4.20
+export const FENCE_CENTER_X = 14.5;   // 覆盖 x ∈ [-2, 31](起点前 2m ~ 终点后 6m)
+export const FENCE_HALF_LEN = 16.5;
+export const FENCE_HALF_T = 0.05;     // 半厚(全厚 0.1)
+export const FENCE_HALF_H = 0.3;      // 半高(全高 0.6)
+
+export function fenceGeomsXml() {
+  const cy = FENCE_INNER_Y + FENCE_HALF_T;
+  return `
+    <geom name="race_fence_left" type="box" pos="${FENCE_CENTER_X} ${-cy} ${FENCE_HALF_H}" size="${FENCE_HALF_LEN} ${FENCE_HALF_T} ${FENCE_HALF_H}" condim="3" friction="0.5 0.005 0.0001"/>
+    <geom name="race_fence_right" type="box" pos="${FENCE_CENTER_X} ${cy} ${FENCE_HALF_H}" size="${FENCE_HALF_LEN} ${FENCE_HALF_T} ${FENCE_HALF_H}" condim="3" friction="0.5 0.005 0.0001"/>`;
+}
+
+// 各物种官方 MJCF 的第一个 <worldbody> 后注入护栏(MuJoCo 对重复 section 合并, 位置无所谓)
+function insertFences(xml) {
+  if (xml.includes('race_fence')) return xml;
+  return xml.replace('<worldbody>', `<worldbody>${fenceGeomsXml()}`);
+}
+
 // G1 的"机器人 MJCF"外层比赛场景包装
 export function buildSceneXml() {
   return `<mujoco model="g1_race">
   <include file="g1_29dof.xml"/>
   <option timestep="0.002" gravity="0 0 -9.81"/>
   <worldbody>
-    <geom name="floor" type="plane" size="0 0 0.05" pos="0 0 0" rgba="0.98 0.98 0.98 1" condim="3" friction="1 0.005 0.0001"/>
+    <geom name="floor" type="plane" size="0 0 0.05" pos="0 0 0" rgba="0.98 0.98 0.98 1" condim="3" friction="1 0.005 0.0001"/>${fenceGeomsXml()}
   </worldbody>
 </mujoco>`;
 }
@@ -60,6 +82,7 @@ export class Sim {
       let xml = a.xml;
       if (a.extraFiles && a.extraFiles.size > 0) xml = inlineMjcfIncludes(xml, a.extraFiles);
       for (const p of sp.xmlPatches ?? []) xml = xml.split(p.from).join(p.to);
+      xml = insertFences(xml);
       const key = sp.id + '_model.xml';
       const fl = (xml.match(/name="floor"/g) || []).length;
       if (fl > 1) console.log('DBG floors:', fl, 'include tags left:', (xml.match(/<include/g) || []).length);

@@ -60,7 +60,8 @@ export class Race {
       if (this.countdown <= 1.0) {
         this.state = 'racing';
         this.raceClock = 0;
-        for (const r of this.robots) { r.curVx = r.targetSpeed; r.cmd && (r.cmd[0] = r.targetSpeed); }
+        // 发枪后由 stepOnce 的斜率限幅把 curVx 从 0 平滑加速到 targetSpeed,
+        // 不做指令阶跃(阶跃易造成起步踉跄 -> 起跑斜向冲出车道)
         this.onState && this.onState(this.state);
       }
     }
@@ -80,7 +81,7 @@ export class Race {
         r.finishedAt = this.raceClock;
       }
       if (r.finished && this.raceClock - r.finishedAt > POST_FINISH_CMD) {
-        r.curVx = 0; r.cmd && (r.cmd[0] = 0); // 冲线后缓缓停下
+        r.targetSpeed = 0; // 冲线后缓缓停下(stepOnce 的斜率限幅负责减速)
       }
 
       // 摔倒判定与扶起(阈值随物种; 阈值<=0 表示该物种不判摔)
@@ -101,7 +102,7 @@ export class Race {
 
     if (this.raceClock >= RACE_TIMEOUT || this.robots.every((r) => r.finished)) {
       this.state = 'finished';
-      for (const r of this.robots) { r.curVx = 0; r.cmd && (r.cmd[0] = 0); }
+      for (const r of this.robots) r.targetSpeed = 0;
       this.onState && this.onState(this.state);
     }
   }

@@ -5,7 +5,7 @@
 | 物种 | 速度包线 | 模型来源 | 策略来源 |
 |---|---|---|---|
 | 🤖 Unitree G1(29 DoF) | 1.55 m/s | unitree_ros 官方 MJCF+网格 | [g1_deploy_mujoco](https://github.com/RoboCubPilot/g1_deploy_mujoco) ONNX |
-| 🦾 众擎 SA01(12 DoF) | 1.50 m/s | [engineai_legged_gym](https://github.com/engineai-robotics/engineai_legged_gym) 官方 MJCF+网格 | 同仓库官方 `zqsa01_policy.onnx` |
+| 🦾 众擎 PM01(23 DoF) | 1.00 m/s | [engineai_rl_lab](https://github.com/engineai-robotics/engineai_rl_lab) 官方 MJCF+网格 | 同仓库官方 AMP 速度策略 ONNX(`model_19999.onnx`) |
 | 🦿 Booster T1(12 DoF) | 1.20 m/s | [booster_gym](https://github.com/BoosterRobotics/booster_gym) 官方 MJCF+网格 | 同仓库官方 `T1.pt`(已转 ONNX) |
 
 **收录标准:官方机器人模型文件 + 官方策略模型,两者齐备才收录;缺一不加。**
@@ -15,8 +15,9 @@ three.js 渲染,纯前端本地运行。
 
 ### 调研记录(2026-09,为什么是这三台)
 
-- ✅ **众擎 SA01**:`engineai_legged_gym` 同时提供官方 MJCF、STL 网格、ONNX 策略和
-  `sim2sim_zqsa01.py` 部署脚本(观测契约逐条可对齐)。
+- ✅ **众擎 PM01**:`engineai_rl_lab` 同时提供官方 MJCF、STL 网格与训练导出的
+  AMP 速度策略 ONNX + `params/env.yaml`(观测契约逐条可对齐, 训练指令范围
+  vx 0.5~0.8、yaw ±0.6, 观测各原始值无缩放)。
 - ✅ **Booster T1**:`booster_gym` 提供训练用官方 MJCF(`T1_locomotion.xml`)、部署配置
   `T1.yaml` 与 TorchScript 权重 `T1.pt`(本仓库用 CPU torch 转成 ONNX,数值误差 <1e-6)。
 - ❌ **智元 A2**:官方只放了 X2 的 URDF,无 A2 模型;无任何公开 A2 运动策略 → 不加。
@@ -67,13 +68,19 @@ node server.js 8137        # 或任意静态服务器: python -m http.server 813
 │      T1  : [重力投影, 角速度, 指令, 步态时钟, 关节, 关节速度, 上次动作] 47 单帧
 │    · 动作 -> 目标角 = a·actionScale + 默认角(各物种自己的缩放/默认站姿)
 ├─ three.js: mjv_updateScene 管线取每个 geom 世界位姿(官方 STL 网格), 赛道/拱门/阴影
-├─ 航向保持外环(纯跟踪): 航向误差 -> 各策略的 yaw 角速度指令
-└─ 比赛逻辑: 倒计时发枪、实时排名、摔倒罚时扶起、结算面板
+├─ 航向保持外环(横向 PD 级联): 车道偏差 P + 横向速度阻尼 -> 期望航向 -> 航向误差 P
+│   + 偏航阻尼 -> 各策略的 yaw 角速度指令; 赛道两侧另有物理挡墙兜底(红白路缘)
+└─ 比赛逻辑: 倒计时发枪(倒计时期间指令清零防抢跑)、实时排名、摔倒罚时扶起、结算面板
 ```
 
 ### 已知实现要点(踩坑记录)
 
 - **G1 策略极限 1.55 m/s**;速度指令更高时起步必摔(详见 `test-speed-sweep.mjs`)。
+- **PM01 速度包线 1.0 m/s**:官方 env.yaml 训练指令范围 vx 0.5~0.8(观测原始值
+  无缩放), sim2sim 下策略只跟踪六成(0.8 指令实跑 ~0.52)。给更高指令可再提速:
+  1.0/1.1 指令稳定完赛(实跑 0.68~0.77), 1.2 起步必摔, ≥1.11 随机中段摔。
+  `maxV` 取 1.0, 比赛 ±6% 抖动后最坏 1.06, 留足安全边际(实际均速 ~0.68, 比原
+  0.8 包线快 ~30%)。
 - **G1 的策略顺序 ≠ mujoco 顺序**:默认角必须经 `policyToXml` 重排成 mujoco 顺序
   再喂给 PD/obs(否则观测错乱、起步即摔——本次多物种化时踩过)。
 - **SA01 obs 里的欧拉角**:官方 sim2sim 用 rpy(非四元数/重力投影), 且相位时钟按
@@ -86,12 +93,25 @@ node server.js 8137        # 或任意静态服务器: python -m http.server 813
 - **TorchScript → ONNX**: `T1.pt` 用 `torch.jit.load + torch.onnx.export`(动态 batch)
   转换, 转换后与 torch 前向误差 <1e-6; 转换脚本思路见 RETRAIN.md。
 - **rAF 不可靠**: 仿真由 4ms 定时器驱动、渲染由 rAF + 100ms 定时器兜底。
+- **跑出跑道问题的两层修复(2026-09-25)**:
+  1. 航向外环从"纯跟踪 P 控制"升级为**横向 PD 级联**(车道偏差 P + 横向速度阻尼 D →
+     期望航向 → 航向误差 P + 偏航阻尼 D)。纯 P 纯跟踪在高速下欠阻尼会画 S 形;
+     T1 策略的 yaw 跟踪迟缓且超调大, 需按物种调低航向增益(`species.steer`,
+     见 `makeSteer`)。修复后 G1 ≤0.14m / PM01 ≤0.13m / T1 ≤0.42m 最大横向偏差。
+  2. **物理护栏兜底**: 每个物种的 MJCF 在编译前注入赛道两侧挡墙(`sim.js`
+     `fenceGeomsXml`, 内侧面 y=±4.20), 视觉上对应红白路缘。正常贴道跑永不接触;
+     摔倒/打滑/极端漂移时被挡在跑道内。无头测试用"关闭外环的 G1"(固有弧线偏置)
+     验证护栏兜底有效。
+- **起步与调速全平滑**: 发枪后 `curVx` 由斜率限幅(2.5 m/s²)加速到目标速度、
+  倒计时期间指令清零(防抢跑)、比赛中拖动速度滑块不再产生指令阶跃——阶跃易造成
+  踉跄, 踉跄正是斜向冲出车道的常见诱因。修复后混合比赛 0 摔倒(此前 1-3 次)。
 
 ## 回归测试
 
 ```bash
 node test-gaits.mjs         # 每物种 0.85×包线 25m 单测 + 三物种混合比赛(全自由物理)
 node test-straightline.mjs  # G1 六道六速直线跑回归(含 1.55 极限速度)
+node test-lanekeep.mjs      # 赛道保持回归: 三物种贴道跑 + 物理护栏兜底 + 混合比赛
 node test-speed-sweep.mjs   # G1 速度包线扫描
 ```
 
@@ -103,6 +123,7 @@ g1-race/
 ├── server.js             # 极简静态服务器(node server.js [port])
 ├── test-gaits.mjs        # 无头回归: 三物种 25m 单测 + 混合比赛
 ├── test-straightline.mjs # G1 直线跑回归
+├── test-lanekeep.mjs     # 赛道保持回归: 贴道跑 + 护栏兜底 + 混合比赛
 ├── RETRAIN.md            # 提速重训指南 + 新物种接入流程
 ├── src/
 │   ├── main.js           # 启动、多物种调度(各策略周期)、阵容、相机、HUD

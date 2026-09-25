@@ -11,7 +11,7 @@
 //          cos(2πφ), sin(2πφ), 关节位置-默认(12), 关节速度×0.1(12), 上次动作(12)],
 //          单帧, 指令平滑+步态门控, 策略周期 20ms。
 // 输出动作 -> 目标角 = a·actionScale + 默认角; 关节空间 PD(带力矩限幅)。
-// 比赛直道保持: 上层纯跟踪外环把航向误差转成 cmd[2], 见 STEER。
+// 比赛直道保持: 上层横向 PD 级联外环把车道偏差转成 cmd[2], 见 STEER。
 
 // ---------- G1 契约(布局细节与 G1 部署管线绑定) ----------
 export const CFG = {
@@ -53,27 +53,45 @@ function quatToRpy(qw, qx, qy, qz) {
   return [roll, pitch, yaw];
 }
 
-// ---------- 航向保持外环(纯跟踪式) ----------
-// 速度策略只跟踪机体系速度指令, 对世界系航向没有反馈。外环瞄准本车道前方一点,
-// 把航向误差转成策略的偏航角速度指令 cmd[2]。
+// ---------- 航向保持外环(横向 PD 级联) ----------
+// 速度策略只跟踪机体系速度指令, 对世界系航向没有反馈。外环分两级:
+//  1) 横向: 车道偏差 P + 横向速度阻尼 D -> 期望横向速度(限幅), 与前进速度
+//     合成期望航向角(限幅, 低速时不疯狂转向);
+//  2) 航向: 期望航向与实际航向的误差 P + 偏航角速度阻尼 D -> cmd[2]。
+// 纯"瞄准前方一点"的 P 控制在高速下欠阻尼会画 S 形, 这里两处阻尼把它压住。
 export const STEER = {
-  kp: 2.0,
-  lookahead: 2.0,
-  maxYawCmd: 1.0,
+  kpLat: 1.1,      // 横向偏差 -> 期望横向速度 (1/s)
+  kdLat: 0.9,      // 横向速度阻尼 (1/s)
+  maxLat: 0.30,    // 期望横向速度限幅 (m/s), 避免超出策略训练分布
+  maxHeadErr: 0.7, // 期望航向角限幅 (rad)
+  kpYaw: 2.2,      // 航向误差 -> yaw 角速度指令 (1/s)
+  kdYaw: 0.12,     // 偏航角速度阻尼
+  maxYawCmd: 1.0,  // yaw 指令绝对限幅(再受物种 yawCap 约束)
 };
 
 export function headingYaw(qw, qx, qy, qz) {
   return Math.atan2(2 * (qx * qy + qw * qz), 1 - 2 * (qy * qy + qz * qz));
 }
 
+// 物种级覆盖: makeSteer({kpYaw: 1.5}) -> 与 STEER 默认合并后的完整参数对象
+export function makeSteer(over = {}) {
+  return { ...STEER, ...over };
+}
+
 export function wrapPi(a) {
   return Math.atan2(Math.sin(a), Math.cos(a));
 }
 
-export function steerCmd(q, laneY, steer = STEER) {
-  const desired = Math.atan2(laneY - q[1], steer.lookahead);
+export function steerCmd(q, qvel, laneY, steer = STEER) {
+  const clampV = (x, a, b) => Math.max(a, Math.min(b, x));
+  const e = q[1] - laneY;                            // 横向偏差(>0: 车道左侧)
+  const vy = qvel ? qvel[1] : 0;                     // 世界系横向速度
+  const vx = Math.max(0.15, qvel ? qvel[0] : 1.0);   // 前进速度(下限防低速发散)
+  const vLat = clampV(-steer.kpLat * e - steer.kdLat * vy, -steer.maxLat, steer.maxLat);
+  const desired = clampV(Math.atan2(vLat, vx), -steer.maxHeadErr, steer.maxHeadErr);
   const err = wrapPi(desired - headingYaw(q[3], q[4], q[5], q[6]));
-  return Math.max(-steer.maxYawCmd, Math.min(steer.maxYawCmd, steer.kp * err));
+  const wz = qvel ? qvel[5] : 0;                     // 机体系偏航角速度
+  return clampV(steer.kpYaw * err - steer.kdYaw * wz, -steer.maxYawCmd, steer.maxYawCmd);
 }
 
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
