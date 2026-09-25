@@ -1,7 +1,6 @@
 // 比赛状态机: 就绪 -> 倒计时 -> 比赛 -> 结算, 含摔倒判定/扶起/罚时与排名。
 
 import { FINISH_X } from './scene.js';
-import { FALL_Z } from './sim.js';
 
 const RACE_TIMEOUT = 90;      // 秒, 超时按 DNF
 const FALL_PENALTY = 2.0;     // 秒, 每次摔倒罚时
@@ -23,9 +22,10 @@ export class Race {
   resetAll(seed) {
     this.rng = mulberry32(seed);
     for (const r of this.robots) {
-      this.sim.resetRobot(r.sim, r.laneY, this.rng, 0.025, 0);
-      r.runner.reset();
-      r.cmd[0] = 0; r.cmd[1] = 0; r.cmd[2] = 0;
+      this.sim.resetRobot(r.sim, r.laneY, this.rng, r.noise ?? 0.025, 0);
+      r.runner?.reset();
+      r.onRestand && r.onRestand(0);
+      r.curVx = 0;
       r.finished = false;
       r.finishTime = 0;
       r.penalty = 0;
@@ -60,7 +60,7 @@ export class Race {
       if (this.countdown <= 1.0) {
         this.state = 'racing';
         this.raceClock = 0;
-        for (const r of this.robots) r.cmd[0] = r.targetSpeed;
+        for (const r of this.robots) { r.curVx = r.targetSpeed; r.cmd && (r.cmd[0] = r.targetSpeed); }
         this.onState && this.onState(this.state);
       }
     }
@@ -80,11 +80,11 @@ export class Race {
         r.finishedAt = this.raceClock;
       }
       if (r.finished && this.raceClock - r.finishedAt > POST_FINISH_CMD) {
-        r.cmd[0] = 0; // 冲线后缓缓停下
+        r.curVx = 0; r.cmd && (r.cmd[0] = 0); // 冲线后缓缓停下
       }
 
-      // 摔倒判定与扶起
-      if (!r.fallen && q[2] < FALL_Z && !r.finished) {
+      // 摔倒判定与扶起(阈值随物种; 阈值<=0 表示该物种不判摔)
+      if (!r.fallen && r.fallZ > 0 && q[2] < r.fallZ && !r.finished) {
         r.fallen = true;
         r.fallenAt = this.raceClock;
         r.falls += 1;
@@ -92,15 +92,16 @@ export class Race {
       }
       if (r.fallen && this.raceClock - r.fallenAt >= FALL_REST) {
         this.sim.resetRobot(r.sim, r.laneY, this.rng, 0.02, Math.max(r.x, 0));
-        r.runner.reset();
-        r.cmd[0] = r.targetSpeed;
+        r.runner?.reset();
+        r.onRestand && r.onRestand(Math.max(r.x, 0));
+        r.curVx = r.targetSpeed;
         r.fallen = false;
       }
     }
 
     if (this.raceClock >= RACE_TIMEOUT || this.robots.every((r) => r.finished)) {
       this.state = 'finished';
-      for (const r of this.robots) r.cmd[0] = 0;
+      for (const r of this.robots) { r.curVx = 0; r.cmd && (r.cmd[0] = 0); }
       this.onState && this.onState(this.state);
     }
   }

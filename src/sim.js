@@ -1,59 +1,13 @@
-// MuJoCo WASM 加载、MEMFS 资产注入、场景组装与多机器人实例管理。
+// MuJoCo WASM 加载、MEMFS 资产注入、多物种模型编译与机器人实例管理。
+//
+// 每个物种一份 MjModel(官方 MJCF 原版 + 最小运行时补丁), 每台机器人独立 MjData。
+// 同物种机器人共享模型。不要缓存 data.qpos/ctrl 的包装对象, 每次经 data.<field> 现取。
+
+import { SPECIES } from './robots.js';
 
 export const LANE_WIDTH = 1.35;
-export const PELVIS_HOME_Z = 0.793;
-export const FALL_Z = 0.45;
 
-export class Sim {
-  // assets: { xml: string, meshes: Map<name, Uint8Array>, sceneXml: string }
-  static async load(mujocoMod, assets, log) {
-    const sim = new Sim();
-    sim.mj = mujocoMod;
-
-    log('注入 MJCF 与网格到模型虚拟文件系统 ...');
-    const vfs = new mujocoMod.MjVFS();
-    vfs.addBuffer('g1_29dof.xml', new TextEncoder().encode(assets.xml));
-    for (const [name, bytes] of assets.meshes) {
-      vfs.addBuffer('meshes/' + name, bytes);
-    }
-
-    log('编译 MuJoCo 模型(29 DoF + 36 网格)...');
-    sim.model = mujocoMod.MjModel.from_xml_string(assets.sceneXml, vfs);
-    if (!sim.model) throw new Error('MjModel 编译失败');
-    sim.nq = sim.model.nq; sim.nu = sim.model.nu; sim.nv = sim.model.nv;
-    log(`模型就绪: nq=${sim.nq} nv=${sim.nv} nu=${sim.nu} nbody=${sim.model.nbody} ngeom=${sim.model.ngeom}`);
-    return sim;
-  }
-
-  // 创建一台机器人(独立 MjData, 共享 MjModel)。
-  // 注意: 不要缓存 data.qpos/ctrl 的包装对象, 每次经 data.<field> 现取。
-  addRobot() {
-    const data = new this.mj.MjData(this.model);
-    return { data };
-  }
-
-  resetRobot(robot, laneY, rng, noiseScale = 0.02, startX = 0) {
-    const { data } = robot;
-    const qpos = data.qpos, qvel = data.qvel;
-    this.mj.mj_resetData(this.model, data);
-    qpos[0] = startX;   // 起点线(扶起时为当前位置)
-    qpos[1] = laneY;    // 赛道
-    qpos[2] = PELVIS_HOME_Z;
-    qpos[3] = 1; qpos[4] = 0; qpos[5] = 0; qpos[6] = 0;
-    // 关节初始小扰动 -> 各机器人轨迹分岔, 比赛才有差别
-    for (let i = 7; i < this.nq; i++) {
-      qpos[i] = (rng() * 2 - 1) * noiseScale;
-    }
-    for (let i = 0; i < this.nv; i++) qvel[i] = 0;
-    this.mj.mj_forward(this.model, data);
-  }
-
-  // robot 为主机器人对象 { sim: { data }, ... }, 数据经 robot.sim.data 现取
-  step(robot) {
-    this.mj.mj_step(this.model, robot.sim.data);
-  }}
-
-// 比赛场景: 在机器人 MJCF 外包一层地面与求解器配置
+// G1 的"机器人 MJCF"外层比赛场景包装
 export function buildSceneXml() {
   return `<mujoco model="g1_race">
   <include file="g1_29dof.xml"/>
@@ -62,6 +16,107 @@ export function buildSceneXml() {
     <geom name="floor" type="plane" size="0 0 0.05" pos="0 0 0" rgba="0.98 0.98 0.98 1" condim="3" friction="1 0.005 0.0001"/>
   </worldbody>
 </mujoco>`;
+}
+
+// 递归内联 MJCF 的 <include file="X"/>(各文件为完整 <mujoco> 文档, 取其根内容)。
+// 嵌套 include 按所在文件目录解析(如 xml/serial_pm_v2.xml 里的 "assets.xml")。
+function inlineMjcfIncludes(xml, files, baseDir = '', depth = 0) {
+  if (depth > 6) return xml;
+  const re = /<include file="([^"]+)"\s*\/>/g;
+  return xml.replace(re, (_, f) => {
+    const key = baseDir ? baseDir + '/' + f.replace(/^\.\//, '') : f;
+    const raw = files.get(key);
+    if (raw === undefined) return '';
+    const body = raw.replace(/^[\s\S]*?<mujoco[^>]*>/, '').replace(/<\/mujoco>\s*$/i, '');
+    const subDir = key.includes('/') ? key.slice(0, key.lastIndexOf('/')) : '';
+    return inlineMjcfIncludes(body, files, subDir, depth + 1);
+  });
+}
+
+export class Sim {
+  // assets: { g1: {xml, meshes:Map}, species: [{id, xml, meshes:Map}] }
+  static async load(mujocoMod, assets, log) {
+    const sim = new Sim();
+    sim.mj = mujocoMod;
+
+    const vfs = new mujocoMod.MjVFS();
+    sim.vfs = vfs;
+
+    log('注入 G1 MJCF 与网格 ...');
+    vfs.addBuffer('g1_29dof.xml', new TextEncoder().encode(assets.g1.xml));
+    for (const [name, bytes] of assets.g1.meshes) vfs.addBuffer('meshes/' + name, bytes);
+    log('编译 G1 模型(29 DoF + 36 网格)...');
+    sim.model = mujocoMod.MjModel.from_xml_string(buildSceneXml(), vfs);
+    if (!sim.model) throw new Error('G1 MjModel 编译失败');
+    sim.nq = sim.model.nq; sim.nu = sim.model.nu; sim.nv = sim.model.nv;
+    log(`G1 就绪: nq=${sim.nq} nv=${sim.nv} nu=${sim.nu}`);
+
+    // 各物种官方 MJCF(自带场景)直接编译
+    sim.speciesModels = new Map();
+    for (const sp of SPECIES) {
+      if (sp.id === 'g1') continue;
+      const a = assets.species.get(sp.id);
+      if (!a) continue;
+      let xml = a.xml;
+      if (a.extraFiles && a.extraFiles.size > 0) xml = inlineMjcfIncludes(xml, a.extraFiles);
+      for (const p of sp.xmlPatches ?? []) xml = xml.split(p.from).join(p.to);
+      const key = sp.id + '_model.xml';
+      const fl = (xml.match(/name="floor"/g) || []).length;
+      if (fl > 1) console.log('DBG floors:', fl, 'include tags left:', (xml.match(/<include/g) || []).length);
+      vfs.addBuffer(key, new TextEncoder().encode(xml));
+      for (const [name, bytes] of a.meshes) vfs.addBuffer('meshes/' + name, bytes);
+      try {
+        const m = mujocoMod.MjModel.from_xml_string(xml, vfs);
+        m.opt.timestep = sp.dt; // 与官方部署一致(如 sim2sim 覆盖 timestep)
+        sim.speciesModels.set(sp.id, m);
+        log(`${sp.name} 模型就绪: nq=${m.nq} nu=${m.nu} dt=${sp.dt}`);
+      } catch (e) {
+        log(`${sp.name} 模型编译失败: ${String(e.message).slice(0, 120)}`, 'err');
+      }
+    }
+    return sim;
+  }
+
+  modelFor(species) {
+    if (!species || species.id === 'g1') return this.model;
+    return this.speciesModels.get(species.id) ?? this.model;
+  }
+
+  addRobot(species = null) {
+    const model = this.modelFor(species);
+    return { data: new this.mj.MjData(model), model, species: species ?? null };
+  }
+
+  resetRobot(robot, laneY, rng, noiseScale = 0.02, startX = 0) {
+    const { data } = robot;
+    const model = this.modelFor(robot.species);
+    const zHome = robot.species ? robot.species.zHome : 0.793;
+    const qpos = data.qpos, qvel = data.qvel;
+    this.mj.mj_resetData(model, data);
+    qpos[0] = startX;
+    qpos[1] = laneY;
+    qpos[2] = zHome;
+    qpos[3] = 1; qpos[4] = 0; qpos[5] = 0; qpos[6] = 0;
+    for (let i = 7; i < model.nq; i++) {
+      qpos[i] = (rng() * 2 - 1) * noiseScale;
+    }
+    // 关节初始: G1 从 mujoco 零位出生(其策略/模型顺序不同, 旧验证路径);
+    // sa01/t1 关节顺序=恒等, 直接摆到策略默认站姿再加微扰
+    const def = robot.species && robot.species.contract.defaultDof;
+    if (def) {
+      for (let i = 0; i < def.length; i++) qpos[7 + i] = def[i] + (rng() * 2 - 1) * noiseScale;
+    } else {
+      for (let i = 7; i < model.nq; i++) qpos[i] = (rng() * 2 - 1) * noiseScale;
+    }
+    for (let i = 0; i < model.nv; i++) qvel[i] = 0;
+    this.mj.mj_forward(model, data);
+  }
+
+  step(robot) {
+    // 兼容两种机器人包装: 页面运行时 { sim: { data } }, 无头测试 { data }
+    const data = robot.sim ? robot.sim.data : robot.data;
+    this.mj.mj_step(this.modelFor(robot.species), data);
+  }
 }
 
 // 可复现的伪随机数(mulberry32)

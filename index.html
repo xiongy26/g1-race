@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>G1 短跑大赛 · MuJoCo WASM + RL</title>
+<title>双足短跑大赛 · MuJoCo WASM + 多物种 ONNX 策略</title>
 <style>
   :root {
     --bg: #0a0f14;
@@ -46,12 +46,12 @@
 
   #board { top: 84px; right: 14px; width: 300px; padding: 12px 14px; }
   #board h2 { font-size: 10px; letter-spacing: 0.24em; color: var(--dim); font-weight: 400; margin-bottom: 10px; }
-  .row { display: grid; grid-template-columns: 12px 44px 1fr auto; gap: 8px; align-items: center;
+  .row { display: grid; grid-template-columns: 12px minmax(44px, auto) 1fr auto; gap: 8px; align-items: center;
          padding: 5px 0; border-top: 1px solid var(--line); font-size: 12px; }
   .row:first-child { border-top: none; }
   .row.done { background: rgba(56, 217, 122, 0.06); }
   .dot { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
-  .nm { color: var(--text); }
+  .nm { color: var(--text); white-space: nowrap; }
   .bar { height: 5px; background: var(--line); border-radius: 3px; overflow: hidden; }
   .bar i { display: block; height: 100%; background: linear-gradient(90deg, #ffb000, #ff6a00); border-radius: 3px; }
   .st { color: var(--dim); font-variant-numeric: tabular-nums; min-width: 96px; text-align: right; }
@@ -143,8 +143,8 @@
 <div id="view"></div>
 
 <div id="hdr" class="panel">
-  <h1>🏃 G1 短跑大赛</h1>
-  <div class="sub">UNITREE G1 × 29DOF · MUJOCO 3.14 WASM · ONNX 强化学习策略 @ 50Hz</div>
+  <h1>🏃 双足短跑大赛</h1>
+  <div class="sub">3 物种官方模型+官方策略 · MUJOCO 3.14 WASM</div>
 </div>
 
 <div id="statusbar" class="panel">
@@ -175,9 +175,17 @@
     <div class="seg" id="count-seg">
       <button data-n="2">2</button>
       <button data-n="3">3</button>
-      <button data-n="4" class="active">4</button>
+      <button data-n="4">4</button>
       <button data-n="5">5</button>
-      <button data-n="6">6</button>
+      <button data-n="6" class="active">6</button>
+    </div>
+  </div>
+  <div class="cell">
+    <span class="lbl">阵容</span>
+    <div class="seg" id="lineup-seg">
+      <button data-v="mixed" class="active">三强混战</button>
+      <button data-v="g1">全 G1</button>
+      <button data-v="random">随机</button>
     </div>
   </div>
   <div class="cell">
@@ -226,8 +234,8 @@
 
 <div id="boot">
   <div class="inner">
-    <h1>🏃 G1 短跑大赛</h1>
-    <div class="tag">MUJOCO WASM 物理 · ONNX 神经网络控制 · 纯浏览器本地运行</div>
+    <h1>🏃 双足短跑大赛</h1>
+    <div class="tag">MUJOCO WASM 物理 · 官方模型+官方策略 · 纯浏览器本地运行</div>
     <progress id="bootbar" value="0" max="100"></progress>
     <div id="bootlog"></div>
   </div>

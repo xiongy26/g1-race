@@ -146,8 +146,9 @@ function ensureShared(mj) {
   sharedCamera = new mj.MjvCamera();
 }
 
-function getMeshGeometry(model, meshId) {
-  let g = meshGeoCache.get(meshId);
+function getMeshGeometry(model, meshId, cacheKey = '') {
+  const key = cacheKey + meshId;
+  let g = meshGeoCache.get(key);
   if (g) return g;
   const va = model.mesh_vertadr[meshId], vn = model.mesh_vertnum[meshId];
   const fa = model.mesh_faceadr[meshId], fn = model.mesh_facenum[meshId];
@@ -159,7 +160,7 @@ function getMeshGeometry(model, meshId) {
   g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   g.setIndex(new THREE.BufferAttribute(indices, 1));
   g.computeVertexNormals();
-  meshGeoCache.set(meshId, g);
+  meshGeoCache.set(key, g);
   return g;
 }
 
@@ -169,7 +170,10 @@ function getPrimGeometry(mj, type, size) {
   if (g) return g;
   const G = mj.mjtGeom;
   if (type === G.mjGEOM_SPHERE.value) g = new THREE.SphereGeometry(size[0], 24, 16);
-  else if (type === G.mjGEOM_CAPSULE.value) {
+  else if (type === G.mjGEOM_ELLIPSOID.value) {
+    g = new THREE.SphereGeometry(1, 24, 16);
+    g.scale(size[0], size[1], size[2]);
+  } else if (type === G.mjGEOM_CAPSULE.value) {
     g = new THREE.CapsuleGeometry(size[0], 2 * size[1], 8, 16);
     g.rotateX(Math.PI / 2); // mujoco capsule 沿 z
   } else if (type === G.mjGEOM_CYLINDER.value) {
@@ -188,14 +192,21 @@ function getPrimGeometry(mj, type, size) {
 
 // ---------- 机器人 ----------
 export class RobotVisual {
-  constructor(mj, model, teamColor, label) {
+  constructor(mj, model, teamColor, label, labelH = 1.25, cacheKey = '', visGroups = [1]) {
     this.mj = mj;
     this.model = model;
     ensureShared(mj);
     this.mjvScene = new mj.MjvScene(model, 20000);
+    // 每物种可见 geom 组(官方 MJCF 的视觉网格组各不相同: G1/T1=1, PM01=2)
+    this.option = new mj.MjvOption();
+    for (let i = 0; i < 6; i++) this.option.geomgroup[i] = 0;
+    for (let i = 0; i < 6; i++) this.option.sitegroup[i] = 0;
+    for (const g of visGroups) this.option.geomgroup[g] = 1;
     this.group = new THREE.Group();
     this.meshes = []; // mjv geom 槽位 -> three mesh
     this.tint = new THREE.Color(teamColor);
+    this.labelH = labelH;
+    this.cacheKey = cacheKey;
 
     // 头顶编号牌
     const cv = document.createElement('canvas');
@@ -217,7 +228,7 @@ export class RobotVisual {
   update(data) {
     const mj = this.mj;
     const model = this.model;
-    mj.mjv_updateScene(model, data, sharedOption, sharedPerturb, sharedCamera,
+    mj.mjv_updateScene(model, data, this.option, sharedPerturb, sharedCamera,
       mj.mjtCatBit.mjCAT_ALL.value, this.mjvScene);
     const geoms = this.mjvScene.geoms;
     const n = geoms.size();
@@ -239,10 +250,11 @@ export class RobotVisual {
           meshId = (objid >= 0 && objid < model.ngeom) ? Number(model.geom_dataid[objid]) : Number.NaN;
           if (!Number.isFinite(meshId)) continue;
         }
-        const geo = type === mj.mjtGeom.mjGEOM_MESH.value
-          ? getMeshGeometry(model, meshId)
+        const isMesh = type === mj.mjtGeom.mjGEOM_MESH.value;
+        const geo = isMesh
+          ? getMeshGeometry(model, meshId, this.cacheKey)
           : getPrimGeometry(mj, type, size);
-        const key = type === mj.mjtGeom.mjGEOM_MESH.value ? `m${meshId}` : `p${type}:${size.join(',')}`;
+        const key = isMesh ? `m${this.cacheKey}${meshId}` : `p${type}:${size.join(',')}`;
 
         let mesh = this.meshes[i];
         if (!mesh || mesh.userData.key !== key) {
@@ -280,9 +292,9 @@ export class RobotVisual {
     for (let i = n; i < this.meshes.length; i++) {
       if (this.meshes[i]) this.meshes[i].visible = false;
     }
-    // 编号牌跟随 pelvis(body 1)
+    // 编号牌跟随 pelvis(body 1), 高度随物种
     const xpos = data.xpos;
-    this.sprite.position.set(xpos[3], xpos[4], xpos[5] + 1.25);
+    this.sprite.position.set(xpos[3], xpos[4], xpos[5] + this.labelH);
   }
 
   dispose() {

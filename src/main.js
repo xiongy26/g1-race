@@ -1,13 +1,18 @@
-// G1 短跑大赛 · 主程序
-// MuJoCo WASM 物理 + ONNX RL 策略 + three.js 渲染, 全部在浏览器本地运行。
+// 双足短跑大赛 · 主程序
+// MuJoCo WASM 物理 + 多物种官方 ONNX 策略 + three.js 渲染, 全部在浏览器本地运行。
+//
+// 每台机器人 = 自己的官方策略模型(ONNX) + 契约化观测 + 关节空间 PD + 航向外环,
+// 全部自由物理(无任何骨盆/轨道辅助)。策略周期按物种而异(G1/T1 50Hz, SA01 100Hz),
+// 物理以 100Hz 细分推进, 各物种按自己的 dt×decim 落子。
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import loadMujoco from '../vendor/mujoco/mujoco.js';
-import { CFG, POLICY_DT, PolicyRunner, PolicySession, steerCmd } from './policy.js';
+import { CFG, PolicyRunner, PolicySession, steerCmd } from './policy.js';
 import { Sim, buildSceneXml, makeRng } from './sim.js';
-import { buildTrack, addLights, RobotVisual, TEAM_COLORS, laneY, MAX_LANES } from './scene.js';
-import { Race, RACE_TIMEOUT } from './race.js';
+import { buildTrack, addLights, RobotVisual, TEAM_COLORS, laneY } from './scene.js';
+import { Race } from './race.js';
+import { SPECIES } from './robots.js';
 
 const $ = (id) => document.getElementById(id);
 const bootlog = $('bootlog');
@@ -17,14 +22,19 @@ function log(msg, cls = '') {
   if (cls) div.className = cls;
   bootlog.appendChild(div);
   bootlog.scrollTop = bootlog.scrollHeight;
-  $('bootbar').value = Math.min(99, $('bootbar').value + 6);
+  $('bootbar').value = Math.min(99, $('bootbar').value + 5);
 }
+
+// 主循环节拍: 各物种策略周期(20ms/10ms)的最小公因数
+const TICK_DT = 0.01;
+
+const G1_SPEC = SPECIES[0];
 
 const app = {
   mujoco: null,
   sim: null,
-  session: null,
-  robots: [],      // { sim, runner, visual, cmd, laneY, name, color, targetSpeed, ...race字段 }
+  sessionBySpecies: new Map(),
+  robots: [],
   race: null,
   renderer: null,
   scene: null,
@@ -34,53 +44,101 @@ const app = {
   camMode: 'leader',
   simSpeed: 1,
   paused: false,
-  baseSpeed: 1.55, // m/s(实测该策略的硬极限: 1.55 各种子稳定, 1.60+ 阶跃/斜坡/软起步均失稳, 见 test-speed-sweep.mjs)
-  robotCount: 4,
+  baseSpeed: 1.55,
+  robotCount: 6,
+  lineup: 'mixed',
   seed: 20260923,
-  rtf: 0,          // realtime factor
+  rtf: 0,
 };
 
-// ---------- 资源加载 ----------
-async function fetchAssets() {
-  log('获取 G1 MJCF ...');
-  const xml = await (await fetch('./assets/g1_29dof.xml')).text();
-  // XML 中 mesh 引用为 file="xxx.STL", 目录由 meshdir="meshes" 指定
-  const meshFiles = [...new Set([...xml.matchAll(/file="([^"]+\.STL)"/g)].map((m) => m[1]))];
-  log(`发现 ${meshFiles.length} 个网格文件, 加载(本地缓存)...`);
+// ---------- 资产加载 ----------
+async function fetchSpeciesAssets(spec) {
+  const extraFiles = new Map();
+  for (const f of spec.extraFiles ?? []) {
+    extraFiles.set(f, await (await fetch('./assets/' + spec.id + '/' + f)).text());
+  }
+  const xml = await (await fetch(spec.xmlFile)).text();
+  const allXml = [xml, ...extraFiles.values()].join('\n');
+  const meshFiles = [...new Set([...allXml.matchAll(/file="([^"]+\.(?:STL|stl|obj))"/g)].map((m) => m[1].split('/').pop()))];
   const meshes = new Map();
   await Promise.all(meshFiles.map(async (name) => {
-    const buf = await (await fetch('./assets/meshes/' + name)).arrayBuffer();
+    const buf = await (await fetch('./assets/' + spec.id + '/meshes/' + name)).arrayBuffer();
     meshes.set(name, new Uint8Array(buf));
   }));
-  log('获取 ONNX 策略(1.7MB) ...');
-  const onnx = await (await fetch('./assets/policy.onnx')).arrayBuffer();
-  return { xml, meshes, onnx };
+  return { xml, extraFiles, meshes };
+}
+
+async function loadAllAssets() {
+  log('获取 G1 MJCF 与网格 ...');
+  const g1Xml = await (await fetch(G1_SPEC.xmlFile)).text();
+  const meshFiles = [...new Set([...g1Xml.matchAll(/file="([^"]+\.STL)"/g)].map((m) => m[1]))];
+  const g1Meshes = new Map();
+  await Promise.all(meshFiles.map(async (name) => {
+    const buf = await (await fetch('./assets/meshes/' + name)).arrayBuffer();
+    g1Meshes.set(name, new Uint8Array(buf));
+  }));
+  const assets = { g1: { xml: g1Xml, meshes: g1Meshes }, species: new Map() };
+  for (const sp of SPECIES) {
+    if (sp.id === 'g1') continue;
+    log(`获取 ${sp.name} 官方模型资产 ...`);
+    assets.species.set(sp.id, await fetchSpeciesAssets(sp));
+  }
+  return assets;
+}
+
+async function loadSpeciesPolicies() {
+  for (const sp of SPECIES) {
+    const res = await fetch(sp.policyFile);
+    if (!res.ok) { log(`${sp.name}: 策略缺失(${sp.policyFile}), 该物种不可用`, 'err'); continue; }
+    const buf = new Uint8Array(await res.arrayBuffer());
+    const session = new PolicySession(ort, sp.contract);
+    await session.load(buf);
+    app.sessionBySpecies.set(sp.id, session);
+    log(`${sp.name}: 策略就绪(${(buf.length / 1024) | 0}KB, obs ${sp.contract.numObs}, ${session.batched ? '支持批量' : '逐台'})`);
+  }
+}
+
+// ---------- 阵容 ----------
+function pickLineup(i, rng) {
+  const pool = SPECIES.filter((s) => app.sessionBySpecies.has(s.id));
+  if (app.lineup === 'g1') return G1_SPEC;
+  if (app.lineup === 'random') return pool[Math.floor(rng() * pool.length) % pool.length];
+  return pool[i % pool.length];
 }
 
 // ---------- 机器人构建 ----------
 function buildRobots(n) {
-  // 清理旧的
   for (const r of app.robots) {
     app.scene.remove(r.visual.group);
     r.visual.dispose();
     try { r.sim.data.delete(); } catch (e) { /* 忽略 */ }
   }
   app.robots = [];
+  const rng = makeRng(app.seed ^ 0x51ed270b);
   for (let i = 0; i < n; i++) {
-    const simRobot = app.sim.addRobot();
-    const runner = new PolicyRunner();
+    const species = pickLineup(i, rng);
+    const simRobot = app.sim.addRobot(species);
+    const model = app.sim.modelFor(species);
     const color = TEAM_COLORS[i % TEAM_COLORS.length];
-    const visual = new RobotVisual(app.mujoco, app.sim.model, color, i + 1);
+    const visual = new RobotVisual(app.mujoco, model, color, i + 1, species.labelH, species.id, species.visGroups);
     app.scene.add(visual.group);
+
+    const runner = new PolicyRunner(species.contract);
+    runner.period = species.dt * species.decim;
     app.robots.push({
       sim: simRobot,
+      species,
       runner,
       visual,
       cmd: new Float32Array(3),
       laneY: laneY(i),
-      name: `${i + 1}号`,
+      name: `${i + 1}号·${species.short}`,
       color,
       targetSpeed: 0,
+      curVx: 0,
+      acc: runner.period, // 策略周期累积器(首拍立即推理)
+      fallZ: species.fallZ,
+      noise: species.noise ?? 0.02,
       finished: false, finishTime: 0, penalty: 0, falls: 0,
       fallen: false, fallenAt: 0, x: 0, speed: 0, place: 0,
     });
@@ -92,44 +150,62 @@ function buildRobots(n) {
 
 function applySpeeds() {
   const rng = makeRng(app.seed ^ 0x9e3779b9);
+  const scale = app.baseSpeed / 1.55;
   for (const r of app.robots) {
-    // 每台机器人的目标速度略有差别(像真实比赛的不同配速策略), 上限压在实测稳定边界内
-    r.targetSpeed = Math.max(0.2, Math.min(1.55, app.baseSpeed + (rng() * 2 - 1) * 0.1));
-    if (app.race.state === 'racing') r.cmd[0] = r.targetSpeed;
+    r.targetSpeed = Math.min(r.species.maxV, Math.max(0.1, r.species.maxV * scale * (1 + (rng() * 2 - 1) * 0.06)));
+    if (app.race.state === 'racing') r.curVx = r.targetSpeed;
   }
 }
 
-// ---------- 仿真步进 ----------
-let acc = 0;
-let busy = false;
-let simAdvanced = 0;
-let realAccum = 0;
-
+// ---------- 仿真步进(每 TICK_DT 一次) ----------
 async function stepOnce() {
   const robots = app.robots;
-  // 构建观测(比赛中先更新航向外环, 再喂观测)
   const steerOn = app.race.state === 'racing' || app.race.state === 'finished';
+
   for (const r of robots) {
     if (r.fallen) continue;
-    // 纯跟踪: 瞄准本车道前方点 -> yaw 角速度指令; 倒计时/就绪阶段不转向
-    r.cmd[2] = steerOn ? steerCmd(r.sim.data.qpos, r.laneY) : 0;
-    r.runner.pushObs(r.runner.buildObs(r.sim.data.qpos, r.sim.data.qvel, r.cmd));
+    const d = r.targetSpeed - r.curVx;
+    r.curVx += Math.max(-2.5 * TICK_DT, Math.min(2.5 * TICK_DT, d));
   }
-  // 推理
-  const actives = robots.filter((r) => !r.fallen);
-  if (actives.length > 0) {
-    const outs = await app.session.inferAll(actives.map((r) => r.runner));
-    actives.forEach((r, i) => r.runner.applyAction(outs[i]));
+
+  // 到期的策略: 构建观测 + 推理 + 写动作
+  const due = [];
+  for (const r of robots) {
+    if (r.fallen) continue;
+    r.acc += TICK_DT;
+    if (r.acc >= r.runner.period - 1e-9) {
+      r.acc -= r.runner.period;
+      const q = r.sim.data.qpos;
+      r.cmd[0] = r.curVx;
+      r.cmd[1] = 0;
+      r.cmd[2] = steerOn ? Math.max(-(r.species.yawCap ?? 1.0), Math.min(r.species.yawCap ?? 1.0, steerCmd(q, r.laneY))) : 0;
+      r.runner.buildAndPushObs(q, r.sim.data.qvel, r.cmd, r.runner.period);
+      due.push(r);
+    }
   }
-  // 500Hz 物理子步
-  for (let k = 0; k < CFG.decimation; k++) {
-    for (const r of robots) {
-      if (r.fallen) continue;
+  // 按物种分组批量推理
+  const groups = new Map();
+  for (const r of due) {
+    if (!groups.has(r.species.id)) groups.set(r.species.id, []);
+    groups.get(r.species.id).push(r);
+  }
+  for (const [sid, rs] of groups) {
+    const session = app.sessionBySpecies.get(sid);
+    if (!session) continue;
+    const outs = await session.inferAll(rs.map((r) => r.runner));
+    rs.forEach((r, i) => r.runner.applyAction(outs[i]));
+  }
+
+  // 物理子步: 每台按自己的 dt 推进 TICK_DT
+  for (const r of robots) {
+    if (r.fallen) continue;
+    const steps = Math.max(1, Math.round(TICK_DT / r.species.dt));
+    for (let k = 0; k < steps; k++) {
       r.runner.pd(r.sim.data.qpos, r.sim.data.qvel, r.sim.data.ctrl);
       app.sim.step(r);
     }
   }
-  app.race.tick(POLICY_DT);
+  app.race.tick(TICK_DT);
 }
 
 // ---------- 相机 ----------
@@ -148,10 +224,9 @@ function updateCamera(dt) {
   app.controls.enabled = false;
   let want, aim;
   if (app.camMode === 'leader') {
-    // 低机位近距跟随: 地面掠过感更强, 更像转播短跑镜头
     want = new THREE.Vector3(lx - 3.8, ly * 0.35, 1.7);
     aim = new THREE.Vector3(lx + 2.6, ly * 0.5, 0.85);
-  } else { // 全景
+  } else {
     want = new THREE.Vector3(lx + 1.5, -12.5, 8.0);
     aim = new THREE.Vector3(lx + 2, 0, 0.8);
   }
@@ -178,9 +253,8 @@ function updateHUD() {
   else if (st === 'racing') { pill.textContent = '比赛进行中'; pill.className = 'pill ok'; }
   else { pill.textContent = '已完赛'; pill.className = 'pill bad'; }
   $('clock').textContent = app.race.state === 'countdown' ? '00.0s' : `${app.race.raceClock.toFixed(1)}s`;
-  $('rt').textContent = `RTF ${app.rtf.toFixed(2)} · 推理 ${app.session ? app.session.inferMs.toFixed(2) : '0'}ms`;
+  $('rt').textContent = `RTF ${app.rtf.toFixed(2)} · 策略×${app.sessionBySpecies.size} · 推理 ${inferMsAvg().toFixed(2)}ms`;
 
-  // 大字倒计时
   const cd = $('countdown');
   if (st === 'countdown' && app.race.countdown > 1.0) {
     cd.style.display = 'block';
@@ -192,7 +266,6 @@ function updateHUD() {
     cd.style.display = 'none';
   }
 
-  // 排名榜(每 3 帧刷新一次)
   if (++hudTick % 3 !== 0) return;
   const rows = app.race.standings();
   const lb = $('lb');
@@ -206,11 +279,17 @@ function updateHUD() {
       : r.fallen ? '😵 摔倒-扶起中' : `${r.speed.toFixed(2)} m/s`;
     div.innerHTML = `
       <span class="dot" style="background:${r.color}"></span>
-      <span class="nm">${r.name}</span>
+      <span class="nm">${r.species.emoji}${r.name}</span>
       <span class="bar"><i style="width:${prog}%"></i></span>
       <span class="st">${stateTxt}</span>`;
     lb.appendChild(div);
   }
+}
+
+function inferMsAvg() {
+  let s = 0, n = 0;
+  for (const sess of app.sessionBySpecies.values()) { s += sess.inferMs; n++; }
+  return n ? s / n : 0;
 }
 
 function showResults() {
@@ -223,7 +302,7 @@ function showResults() {
     const place = r.finished ? (medal[r.place - 1] || `${r.place}`) : 'DNF';
     const time = r.finished ? fmtTime(r.finishTime) : `跑了 ${r.x.toFixed(1)}m`;
     const avg = r.finished ? (25 / r.finishTime).toFixed(2) : '-';
-    tr.innerHTML = `<td>${place}</td><td><span class="dot" style="background:${r.color}"></span>${r.name}</td>
+    tr.innerHTML = `<td>${place}</td><td><span class="dot" style="background:${r.color}"></span>${r.species.emoji} ${r.name}</td>
       <td>${time}</td><td>${avg}</td><td>${r.falls}</td>`;
     tb.appendChild(tr);
   });
@@ -231,12 +310,14 @@ function showResults() {
 }
 
 // ---------- 主循环 ----------
-// 仿真与渲染解耦: 仿真由 4ms 定时器驱动(rAF 在部分环境会被冻结),
-// 渲染走 rAF, rAF 不触发时用 100ms 定时器兜底, 保证任何环境下都能前进。
+let acc = 0;
+let busy = false;
+let simAdvanced = 0;
+let realAccum = 0;
 let simLastT = performance.now();
 
 function simTick() {
-  if (busy || app.paused || !app.session) { simLastT = performance.now(); return; }
+  if (busy || app.paused || app.sessionBySpecies.size === 0) { simLastT = performance.now(); return; }
   const now = performance.now();
   const dt = Math.min((now - simLastT) / 1000, 0.1);
   simLastT = now;
@@ -247,9 +328,9 @@ function simTick() {
     try {
       acc += dt * app.simSpeed;
       let n = 0;
-      while (acc >= POLICY_DT && n < 8) {
+      while (acc >= TICK_DT && n < 16) {
         await stepOnce();
-        acc -= POLICY_DT; simAdvanced += POLICY_DT; n++;
+        acc -= TICK_DT; simAdvanced += TICK_DT; n++;
       }
       if (acc > 0.5) acc = 0;
     } catch (e) {
@@ -264,14 +345,13 @@ function simTick() {
 
 let lastRenderT = 0;
 function renderTick() {
-  if (!app.renderer || !app.race || !app.session) return;
+  if (!app.renderer || !app.race || app.sessionBySpecies.size === 0) return;
   const now = performance.now();
   const dt = Math.min((now - lastRenderT) / 1000 || 0.016, 0.1);
   lastRenderT = now;
   for (const r of app.robots) r.visual.update(r.sim.data);
   updateCamera(dt);
   updateHUD();
-  // 阳光跟随领跑者, 保证阴影覆盖
   const lx = app.robots.reduce((b, r) => (!b || r.x > b.x ? r : b), null)?.x ?? 0;
   app.sun.position.set(lx - 10, -8, 20);
   app.sun.target.position.set(lx, 0, 0);
@@ -284,7 +364,6 @@ function frame() {
   lastRenderT = performance.now();
   renderTick();
 }
-// rAF 冻结时的渲染兜底(约 10fps)
 let renderFallbackStarted = false;
 function startLoops() {
   if (renderFallbackStarted) return;
@@ -301,20 +380,16 @@ function startLoops() {
 
 // ---------- UI 事件 ----------
 function wireUI() {
-  $('btn-start').onclick = () => {
+  const startRace = () => {
     $('results').classList.remove('show');
     app.seed = (Math.random() * 0xffffffff) >>> 0;
     app.race.newSeed(app.seed);
+    if (app.lineup === 'random') buildRobots(app.robotCount);
     applySpeeds();
     app.race.start();
   };
-  $('btn-again').onclick = () => {
-    $('results').classList.remove('show');
-    app.seed = (Math.random() * 0xffffffff) >>> 0;
-    app.race.newSeed(app.seed);
-    applySpeeds();
-    app.race.start();
-  };
+  $('btn-start').onclick = startRace;
+  $('btn-again').onclick = startRace;
   $('res-close').onclick = () => $('results').classList.remove('show');
 
   for (const b of document.querySelectorAll('#count-seg button')) {
@@ -322,6 +397,14 @@ function wireUI() {
       document.querySelectorAll('#count-seg button').forEach((x) => x.classList.remove('active'));
       b.classList.add('active');
       app.robotCount = parseInt(b.dataset.n, 10);
+      buildRobots(app.robotCount);
+    };
+  }
+  for (const b of document.querySelectorAll('#lineup-seg button')) {
+    b.onclick = () => {
+      document.querySelectorAll('#lineup-seg button').forEach((x) => x.classList.remove('active'));
+      b.classList.add('active');
+      app.lineup = b.dataset.v;
       buildRobots(app.robotCount);
     };
   }
@@ -363,10 +446,15 @@ async function main() {
   try {
     log('加载 MuJoCo WASM(约 10MB, 首次稍慢)...');
     app.mujoco = await loadMujoco();
-    log('MuJoCo ' + '就绪');
 
-    const assets = await fetchAssets();
-    app.sim = await Sim.load(app.mujoco, { xml: assets.xml, meshes: assets.meshes, sceneXml: buildSceneXml() }, log);
+    const assets = await loadAllAssets();
+    app.sim = await Sim.load(app.mujoco, assets, log);
+
+    log('加载各物种官方 ONNX 策略 ...');
+    const ort = window.ort;
+    ort.env.wasm.wasmPaths = '/vendor/ort/';
+    ort.env.wasm.numThreads = 1;
+    await loadSpeciesPolicies();
 
     log('初始化 three.js 场景 ...');
     const canvasWrap = $('view');
@@ -382,21 +470,13 @@ async function main() {
     app.scene.background = new THREE.Color(0x9ec7e8);
     app.scene.fog = new THREE.Fog(0x9ec7e8, 40, 120);
     app.camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 400);
-    app.camera.up.set(0, 0, 1); // MuJoCo z-up
+    app.camera.up.set(0, 0, 1);
     app.camera.position.copy(camPos);
     app.controls = new OrbitControls(app.camera, app.renderer.domElement);
     app.controls.enableDamping = true;
     app.controls.target.set(0, 0, 0.8);
     app.sun = addLights(app.scene);
     buildTrack(app.scene);
-
-    log('加载 ONNX 推理会话 ...');
-    const ort = window.ort;
-    ort.env.wasm.wasmPaths = '/vendor/ort/';
-    ort.env.wasm.numThreads = 1;
-    app.session = new PolicySession(ort);
-    const session = await app.session.load(assets.onnx);
-    log(`策略就绪: 输入 ${session.inputNames[0]}(${app.session.batched ? '支持批量' : '逐台'}), 输出 ${session.outputNames[0]}`);
 
     app.race = new Race([], app.sim, null);
     buildRobots(app.robotCount);
@@ -412,13 +492,11 @@ async function main() {
     log('一切就绪! 点击「开始比赛」发枪 🏁');
     setTimeout(() => $('boot').classList.add('hidden'), 600);
     startLoops();
-    // 自动化测试钩子
     window.__app = app;
-    // 确定性推进: 不依赖定时器, 手动步进 N 个策略周期(页面被挂起时测试用)
     window.__kick = async (steps) => {
       for (let i = 0; i < steps; i++) {
         await stepOnce();
-        simAdvanced += POLICY_DT;
+        simAdvanced += TICK_DT;
       }
       renderTick();
       return window.__debug();
@@ -428,11 +506,11 @@ async function main() {
       robots: app.robots.map((r) => {
         const q = r.sim.data.qpos;
         return {
+          name: r.name, species: r.species.id,
           x: +(q[0] ?? NaN).toFixed?.(2) ?? NaN,
           y: +(q[1] ?? NaN).toFixed?.(2) ?? NaN,
           z: +(q[2] ?? NaN).toFixed?.(2) ?? NaN,
           v: +(r.sim.data.qvel[0] ?? NaN).toFixed?.(2) ?? NaN,
-          qposLen: q.length,
           falls: r.falls, done: r.finished,
         };
       }),
@@ -440,7 +518,7 @@ async function main() {
   } catch (e) {
     console.error(e);
     log('启动失败: ' + (e.message || e), 'err');
-    log('请确认通过本地 HTTP 服务访问本页(如 python -m http.server)。', 'err');
+    log('请确认通过本地 HTTP 服务访问本页(如 node server.js)。', 'err');
   }
 }
 

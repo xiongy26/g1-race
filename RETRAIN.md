@@ -89,3 +89,46 @@ README 的速度说明同步更新。
 机器人回放跑步动捕片。公开研究已验证 G1 可达,但控制范式是"跟踪参考动作"而非
 "跟踪速度指令",比赛逻辑(发令/配速差异/摔倒判定)需整体重写,量级为新项目,
 暂作为远期方向。
+
+## 为其他物种接入真 RL 权重(每物种独立策略槽)
+
+页面运行时对所有物种走同一条管线:`assets/<id>/policy.onnx` + `robots.js` 里该物种的
+`contract`(观测/动作/PD 契约)。把任一物种的蒸馏策略替换为真 RL(PPO/FastSAC)权重:
+
+1. **模型**:`src/robots.js` 的 `SPECIES_XML[id]` 就是该物种的 MJCF(字符串)。
+   `node -e "import('./src/robots.js').then(m=>console.log(m.SPECIES_XML.a2))" > a2.xml`
+   可直接导出用于 Isaac/Gym 的转换(或按其关节顺序重写 URDF)。
+2. **训练**:任选 RL 框架, 指令范围/课程参照 G1 的做法; 关节顺序必须对齐
+   `jointList`(腿 L/R → 臂 L/R, 见 `robots.js` 注释), 关节符号约定见模板头注释。
+3. **导出 ONNX**:输入 `[N, numObs*stack]`(float32), 输出 `[N, numActions]`;
+   建议直接用 `src/onnxlite.js` 的 `buildMlpOnnx`(或任何导出器, 保持输入输出名任意,
+   代码按第一个输入/输出自动识别)。
+4. **契约**:在 `robots.js` 该物种 `contract` 里对齐 `angVelScale/dofVelScale/
+   actionScale/defaultAnglesPolicyOrder/policyToXml/kps/kds/stack/numObs`;
+   若策略不使用相位时钟, 置 `phase: false` 并相应减 3 维观测。
+5. **覆盖** `assets/<id>/policy.onnx` → 刷新页面即生效, 运行时代码零改动。
+
+## 蒸馏策略的再训练(无需 GPU)
+
+```bash
+node train-policy.mjs               # 重新训练全部 5 个程序化物种
+node train-policy.mjs microduck     # 只训一个物种
+```
+
+改体型/步态 → 只改 `robots.js` 的 `SPECIES_XML` 参数与 `species.gait`
+(步频 T/步长上限 Lmax/举腿 lift/起伏 dip), 重跑即得新策略; 评估不达标时管线会
+自动追加 DAgger 轮次(学生造访的状态用教师重新标注后合并重训)。
+
+
+## 接入新物种(模型+策略齐备的机器人)
+
+本仓库的物种接入是纯数据工作, 运行时代码零改动:
+
+1. **下载官方资产**: MJCF(或 URDF+网格)放到 assets/<id>/, 策略权重(ONNX 直接用;
+   TorchScript .pt 用 CPU torch 转换: torch.jit.load → torch.onnx.export(动态 batch),
+   导出后务必与 torch 前向数值比对(应 <1e-5))。
+2. **对齐观测契约**: 找官方部署脚本/配置里的 obs 布局(各分量顺序/缩放/堆叠方式/
+   相位时钟/指令缩放)、PD 增益、力矩限幅、默认站姿、动作缩放、仿真步长与策略频率。
+3. **注册物种**: 在 src/robots.js 的 SPECIES 加一条(id/名称/资产路径/contract/dt/
+   decim/zHome/fallZ/maxV), MJCF 需要的运行时补丁写进 xmlPatches。
+4. **验证**: node test-gaits.mjs 里加该物种的 25m 单测; 浏览器里确认渲染与摔倒判定。
