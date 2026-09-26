@@ -15,7 +15,7 @@ import { makeSteer } from './policy.js';
 //   TK   天工 Tienkung2-Lite: Open-X-Humanoid/TienKung-Lab(官方 MJCF+STL+walk.pt+
 //        sim2sim.py, BSD-3-Clause; walk.pt 已转 ONNX, 数值误差 <1.1e-6)
 //   X1   智元灵犀 X1: AgibotTech/agibot_x1_infer(官方 serial MJCF+STL+
-//        rl_walk_leg.onnx+rl_x1_sim.yaml 部署契约, 同仓库 agibot_x1_train 为训练代码)
+//        rl_walk_leg_shoulder.onnx+rl_x1_sim.yaml 部署契约, 同仓库 agibot_x1_train 为训练代码)
 //   DUCK MicroDuck: pollen-robotics/microduck_rl(官方 scene_allcollisions+
 //        robot_allcollisions MJCF+43 STL, Apache-2.0) + HuggingFace
 //        pollen-robotics/microduck-policies 官方 velstand.onnx(官方默认行走策略,
@@ -139,24 +139,31 @@ for (const side of ['l', 'r']) {
 
 // ---------- 智元灵犀 X1 契约(agibot_x1_infer rl_x1_sim.yaml + rl_controller.cc 逐条对齐) ----------
 // 官方资产: 推理仓库自带 serial MJCF(xyber_x1_flat + xyber_x1_serial)与
-// control_module/policy/rl_walk_leg.onnx, 部署配置 rl_x1_sim.yaml。
-// obs(47) = [sin(2πφ), cos(2πφ), vx·2, vy·2, wy, 关节位置-默认(12), 关节速度×0.05(12),
-//            上次动作(12), 机体角速度(3), 欧拉角 rpy(3)], 帧优先堆叠 66 帧 = 3102,
+// control_module/policy 下的两个官方策略:
+//   rl_walk_leg.onnx          12 腿(上肢保持), 步态周期 0.7s, sim2sim 包线 ~0.85 指令
+//   rl_walk_leg_shoulder.onnx 12 腿+2 肩俯仰摆臂(walk_leg_arm 模式), 步态周期 1.0s
+// 本仓库选用 shoulder 摆臂版(2026-09 提速调研: 同条件多种子对照, leg 版 0.85 指令
+// 实跑 ~0.47, shoulder 版 1.4 指令实跑 ~0.72 且 8/8 种子全净——官方训练课程上限
+// 1.5, 硬件标称 >2m/s, shoulder 版把包线拉满; 详见 README 调研记录)。
+// obs(53) = [sin(2πφ), cos(2πφ), vx·2, vy·2, wy, 关节位置-默认(14), 关节速度×0.05(14),
+//            上次动作(14), 机体角速度(3), 欧拉角 rpy(3)], 帧优先堆叠 66 帧 = 3498,
 //            首帧整段填充当前观测且动作段清零(与 rl_controller 首帧行为一致)。
-// 策略只控 12 个腿关节(顺序 = 配置 joint_list: 髋俯/滚/偏航+膝+踝俯/仰 ×L,R),
-// 上肢 17 执行器按官方 pd_zero+pd_stand 组合增益保持; 目标角一阶 LPF(wc=100, 官方
-// 1kHz -> 本仓库 500Hz, alpha=wc·dt=0.2); |指令|≤0.05 时步态相位清零(sw_mode)。
+// 策略控 12 腿 + 双肩俯仰(顺序 = 配置 joint_list: 髋俯/滚/偏航+膝+踝俯/仰 + 肩俯仰 ×L,R,
+// 注意肩俯仰插在两腿之间), 其余 15 执行器按官方 pd_zero+pd_stand 组合增益保持;
+// 目标角一阶 LPF(wc=100, 官方 1kHz -> 本仓库 500Hz, alpha=wc·dt=0.2);
+// |指令|≤0.05 时步态相位清零(sw_mode)。
 // PD@500Hz(官方 1kHz), 策略@100Hz(decim 5 × dt 0.002)。
+// 腿部 PD 增益与 leg 版不同(官方 shoulder 控制器: 髋 60/60/40 膝 80 踝 40/30)。
 export const X1_CONTRACT = {
   layout: 'x1',
-  numActions: 12,
-  numSingleObs: 47,
-  numObs: 47,
-  inputLen: 3102,
+  numActions: 14,
+  numSingleObs: 53,
+  numObs: 53,
+  inputLen: 3498,
   stack: 66,
   stackMode: 'frame',
   historyFillFirst: true,
-  cycleTime: 0.7,
+  cycleTime: 1.0,
   cmdThreshold: 0.05,
   cmdScales: { vx: 2.0, vy: 2.0, wy: 1.0 },
   dofVelScale: 0.05,
@@ -165,22 +172,22 @@ export const X1_CONTRACT = {
   clipAction: 100.0,
   actionScale: 0.5,
   lpfAlpha: 0.2,
-  // 腿执行器在 29 执行器中排 17..28(qpos 24..35); 策略顺序 = 官方 joint_list(恒等映射)
-  ctrlIdx: [17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28],
-  qposIdx: [24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35],
-  kps: [30, 40, 35, 100, 35, 35, 30, 40, 35, 100, 35, 35],
-  kds: [3, 3, 4, 10, 0.5, 0.5, 3, 3, 4, 10, 0.5, 0.5],
-  tauLimit: [150, 50, 50, 150, 18, 18, 150, 50, 50, 150, 18, 18],
-  defaultDof: [0.4, 0.05, -0.31, 0.49, -0.21, 0.0, -0.4, -0.05, 0.31, 0.49, -0.21, 0.0],
-  // 上肢保持(pd_zero 覆盖全身 + pd_stand 覆盖肩俯/滚与肘俯的非零目标, 官方组合):
-  // 腰 3 × (kp700,kd0.6) 目标 0; 每侧臂 肩俯/滚(300,0.6) 目标 0.15/-0.1、
+  // 策略顺序: L腿6(ctrl 17..22) + L肩俯仰(ctrl 3) + R腿6(ctrl 23..28) + R肩俯仰(ctrl 10)
+  ctrlIdx: [17, 18, 19, 20, 21, 22, 3, 23, 24, 25, 26, 27, 28, 10],
+  qposIdx: [24, 25, 26, 27, 28, 29, 10, 30, 31, 32, 33, 34, 35, 17],
+  kps: [60, 60, 40, 80, 40, 30, 20, 60, 60, 40, 80, 40, 30, 20],
+  kds: [6, 3, 3, 4, 2, 2, 3, 6, 3, 3, 4, 2, 2, 3],
+  tauLimit: [150, 50, 50, 150, 18, 18, 150, 150, 50, 50, 150, 18, 18, 150],
+  defaultDof: [0.4, 0.05, -0.31, 0.49, -0.21, 0.0, 0.15, -0.4, -0.05, 0.31, 0.49, -0.21, 0.0, 0.15],
+  // 上肢保持(pd_zero 覆盖全身 + pd_stand 覆盖肩滚/肘俯的非零目标, 官方组合;
+  // 肩俯仰已入策略, 从保持表剔除):
+  // 腰 3 × (kp700,kd0.6) 目标 0; 每侧臂 肩滚(300,0.6) 目标 -0.1、
   // 肘俯(300,0.6) 目标 0.3、肩偏航/肘偏航/腕俯/腕仰(30,0.1) 目标 0
   holdJoints: [
     ...[0, 1, 2].map((i) => ({ ctrl: i, qpos: 7 + i, qvel: 6 + i, target: 0, kp: 700, kd: 0.6, lim: 150 })),
     ...[0, 1].flatMap((side) => {
       const b = side * 7 + 3; // l_arm 执行器 3..9, r_arm 10..16
       return [
-        { ctrl: b, qpos: 10 + side * 7, qvel: 9 + side * 7, target: 0.15, kp: 300, kd: 0.6, lim: 150 },
         { ctrl: b + 1, qpos: 11 + side * 7, qvel: 10 + side * 7, target: -0.1, kp: 300, kd: 0.6, lim: 150 },
         { ctrl: b + 2, qpos: 12 + side * 7, qvel: 11 + side * 7, target: 0, kp: 30, kd: 0.1, lim: 150 },
         { ctrl: b + 3, qpos: 13 + side * 7, qvel: 12 + side * 7, target: 0.3, kp: 300, kd: 0.6, lim: 150 },
@@ -335,7 +342,8 @@ export const SPECIES = [
     emoji: '🧍',
     xmlFile: './assets/x1/xyber_x1_flat.xml',
     extraFiles: ['robot/xyber_x1/xyber_x1_serial.xml', 'environment/flat.xml'],
-    policyFile: './assets/x1/policy.onnx',
+    // 官方摆臂行走策略(带双肩俯仰, walk_leg_arm 模式); leg 版保留在 assets/x1/policy.onnx
+    policyFile: './assets/x1/policy_shoulder.onnx',
     contract: X1_CONTRACT,
     dt: 0.002,
     decim: 5,
@@ -343,14 +351,16 @@ export const SPECIES = [
     fallZ: 0.32,
     labelH: 1.45,
     visGroups: [0],
-    // 指令 0.85: 20 种子全净的最坏扫描速度(0.9 混合赛个别种子仍有边缘摔);
-    // 实跑 ~0.55-0.6 m/s。指令即原始值
-    maxV: 0.85,
+    // 指令 1.3~1.5 实测包线(实跑饱和 ~0.71-0.73 m/s, 跟踪 ~50%): Python 侧 8 种子
+    // ±6% 抖动 40s 全净; JS 回归见 test-gaits/test-lanekeep。maxV=1.4 取中值。
+    maxV: 1.4,
     // 生成噪声 0.005(其余物种 0.01): X1 小脚+高重心对初始扰动更敏感
     noise: 0.005,
-    // X1 策略自身航向保持弱(Python 开环验证 yaw 持续漂移), 外环需强增益:
-    // 默认增益 10 种子中 1 摔(最坏偏差 0.93m), kpYaw 3.0 后 10/10 全净(0.15m)
-    steer: makeSteer({ kpYaw: 3.0, kdYaw: 0.2 }),
+    // 摆臂策略对 wy 指令极敏感(Python 实测: 恒定 wy=0.1 即失稳降速, wy≤0.06 安全),
+    // 外环必须"轻手": kpYaw=3.0(旧 leg 策略时代)的持续微纠正会磨掉 ~20% 前进速度
+    // (test-x1-tune: 硬增益 40.1s -> 软增益+cap0.06 35.9s, 偏差仅 0.19m, 护栏兜底)
+    steer: makeSteer({ kpYaw: 0.15, kdYaw: 0.02 }),
+    yawCap: 0.06,
     wrapScene: false,
     // 官方 compiler meshdir + 手腕 4 关节 armature 数值稳定补丁(见 X1_CONTRACT 注)
     xmlPatches: x1Patches,

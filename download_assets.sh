@@ -33,6 +33,9 @@ right_hip_pitch right_hip_roll right_hip_yaw right_knee_pitch right_ankle_pitch 
 for m in $X1_MESHES; do
   test -s "$ROOT/assets/x1/meshes/$m.STL" || curl -sf --retry 3 "$X1_BASE/meshes/$m.STL" -o "$ROOT/assets/x1/meshes/$m.STL"
 done
+# 官方行走策略 x2: rl_walk_leg_shoulder.onnx(摆臂版, 本仓库现用) +
+#                  rl_walk_leg.onnx(leg 版, 保留可切回)
+curl -sf --retry 3 "$RAW/AgibotTech/agibot_x1_infer/main/src/module/control_module/policy/rl_walk_leg_shoulder.onnx" -o "$ROOT/assets/x1/policy_shoulder.onnx"
 curl -sf --retry 3 "$RAW/AgibotTech/agibot_x1_infer/main/src/module/control_module/policy/rl_walk_leg.onnx" -o "$ROOT/assets/x1/policy.onnx"
 echo "x1 done: $(du -sh "$ROOT/assets/x1" | cut -f1)"
 

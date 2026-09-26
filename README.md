@@ -8,7 +8,7 @@
 | 🦾 众擎 PM01(23 DoF) | 1.00 m/s | [engineai_rl_lab](https://github.com/engineai-robotics/engineai_rl_lab) 官方 MJCF+网格 | 同仓库官方 AMP 速度策略 ONNX(`model_19999.onnx`) |
 | 🦿 Booster T1(12 DoF) | 1.20 m/s | [booster_gym](https://github.com/BoosterRobotics/booster_gym) 官方 MJCF+网格 | 同仓库官方 `T1.pt`(已转 ONNX) |
 | 🧑‍🚀 天工 Tienkung2-Lite(20 DoF) | 1.00 m/s | [TienKung-Lab](https://github.com/Open-X-Humanoid/TienKung-Lab) 官方 MJCF+网格(BSD-3) | 同仓库官方 `Exported_policy/walk.pt`(TorchScript, 已转 ONNX) |
-| 🧍 智元灵犀 X1(12+17 DoF) | 0.85 m/s | [agibot_x1_infer](https://github.com/AgibotTech/agibot_x1_infer) 官方 serial MJCF+网格 | 同仓库官方 `rl_walk_leg.onnx` + `rl_x1_sim.yaml` 部署契约 |
+| 🧍 智元灵犀 X1(12+17 DoF) | 1.40 m/s | [agibot_x1_infer](https://github.com/AgibotTech/agibot_x1_infer) 官方 serial MJCF+网格 | 同仓库官方 `rl_walk_leg_shoulder.onnx`(摆臂版) + `rl_x1_sim.yaml` 部署契约 |
 | 🦆 Pollen MicroDuck(14 DoF) | 0.90 m/s | [microduck_rl](https://github.com/pollen-robotics/microduck_rl) 官方 MJCF+网格(Apache-2.0) | HuggingFace [microduck-policies](https://huggingface.co/pollen-robotics/microduck-policies) 官方 `velstand.onnx` |
 
 **收录标准:官方机器人模型文件 + 官方策略模型,两者齐备才收录;缺一不加。**
@@ -29,8 +29,15 @@ three.js 渲染,纯前端本地运行。
   步态时钟、20 关节 isaac↔mujoco 映射逐条可对齐;walk.pt 已转 ONNX,数值误差 1.1e-6)。
 - ✅ **智元灵犀 X1**:`agibot_x1_infer` 推理仓库自带全套:官方 serial MJCF
   (`model/mjcf/robot/xyber_x1/xyber_x1_serial.xml`)+ 网格 + 官方行走策略
-  `rl_walk_leg.onnx` + 部署配置 `rl_x1_sim.yaml`(47 维观测×66 帧历史、指令缩放、
+  `rl_walk_leg_shoulder.onnx` + 部署配置 `rl_x1_sim.yaml`(53 维观测×66 帧历史、指令缩放、
   PD/LPF/步态门控全部明文);`agibot_x1_train` 为同源训练代码。
+  该仓库共发布两个官方策略:`rl_walk_leg.onnx`(12 腿, 步态周期 0.7s)与
+  `rl_walk_leg_shoulder.onnx`(12 腿+双肩俯仰摆臂, `walk_leg_arm` 模式, 步态周期 1.0s)。
+  2026-09 提速调研(GitHub 全网扫过: 社区无人发布过 X1 的训练权重, HuggingFace/
+  ModelScope 亦无; `xqsrdtd/agibot_x1_dof_lag` 等训练 repo 均只发代码不发权重)
+  后两版同条件多种子对照: leg 版 0.85 指令实跑 ~0.47, shoulder 版 1.4 指令
+  实跑 ~0.72(8 种子全净)——官方训练课程上限 1.5、硬件标称 >2 m/s, 摆臂版
+  把可用包线拉满, 故选用; leg 版仍保留在 `assets/x1/policy.onnx` 可随时切回。
 - ✅ **Pollen MicroDuck**(HuggingFace):`microduck_rl` 提供官方 MJCF
   (`scene_allcollisions.xml`+`robot_allcollisions.xml`, VelStand 任务训练模型)+43 STL
   (Apache-2.0);官方策略发布在 HuggingFace Hub `pollen-robotics/microduck-policies`
@@ -88,13 +95,15 @@ node server.js 8137        # 或任意静态服务器: python -m http.server 813
 │      天工: [角速度, 重力投影, 指令, 关节, 关节速度, 上次动作, sin/cos(2πφ)×2,
 │              摆空相比例] 75×10 帧优先 = 750(全原始值无缩放)
 │      X1  : [sin/cos(2πφ), 指令×2 缩放, wy, 关节, 关节速度, 上次动作, 角速度, 欧拉角]
-│              47×66 帧优先 = 3102(首帧整段填充, |指令|≤0.05 步态相位清零)
+│              53×66 帧优先 = 3498(首帧整段填充, |指令|≤0.05 步态相位清零;
+│              动作 14 = 12 腿+双肩俯仰摆臂)
 │      MicroDuck: [角速度, 重力投影, 关节, 关节速度, 上次动作, 指令 13 维
 │              (twist 3 + head 4 + body 6)] 61 单帧(全原始值无缩放)
 │    · 动作 -> 目标角 = a·actionScale + 默认角(各物种自己的缩放/默认站姿)
 ├─ three.js: mjv_updateScene 管线取每个 geom 世界位姿(官方 STL 网格), 赛道/拱门/阴影
 ├─ 航向保持外环(横向 PD 级联): 车道偏差 P + 横向速度阻尼 -> 期望航向 -> 航向误差 P
-│   + 偏航阻尼 -> 各策略的 yaw 角速度指令(按物种调增益, X1 需强增益 kpYaw=3.0);
+│   + 偏航阻尼 -> 各策略的 yaw 角速度指令(按物种调增益; X1 摆臂策略对 wy 极敏感,
+│   需"轻手" kpYaw=0.15+cap 0.06, 见已知要点);
 │   赛道两侧另有物理挡墙兜底(红白路缘)
 └─ 比赛逻辑: 倒计时发枪(倒计时期间指令清零防抢跑)、实时排名、摔倒罚时扶起、结算面板
 ```
@@ -165,6 +174,17 @@ node server.js 8137        # 或任意静态服务器: python -m http.server 813
      `fenceGeomsXml`, 内侧面 y=±4.20), 视觉上对应红白路缘。正常贴道跑永不接触;
      摔倒/打滑/极端漂移时被挡在跑道内。无头测试用"关闭外环的 G1"(固有弧线偏置)
      验证护栏兜底有效。
+- **X1 换装官方摆臂策略提速(2026-09-26)**:原 `rl_walk_leg.onnx`(12 腿)换成同仓库
+  `rl_walk_leg_shoulder.onnx`(12 腿+双肩俯仰, `walk_leg_arm` 模式)。要点:
+  1. **契约逐项都变**:obs 47→53(多出的 6 维=两肩俯仰的位置/速度/上次动作), 动作 12→14
+     (肩俯仰插在两腿之间: ctrlIdx/qposIdx 为 `L腿6, L肩, R腿6, R肩`), 步态周期 0.7→1.0s,
+     腿部 PD 增益也不同(髋 60/60/40、膝 80、踝 40/30, 官方 shoulder 控制器配置)。
+  2. **速度包线 0.85→1.4**:sim2sim 实跑从 ~0.47 提到 ~0.72 m/s(跟踪饱和在 ~50%,
+     指令 1.3~1.5 无差别; 8 种子 ±6% 抖动 40s 全净)。比赛 43.99s→35.81s(+23%)。
+  3. **摆臂策略对 wy 指令极敏感**:Python 实测恒定 wy=0.1 即失稳降速(wy≤0.06 安全)。
+     航向外环必须"轻手":kpYaw 3.0(旧策略时代)→0.15 且 yawCap=0.06。外环硬增益下
+     偶发打满 ±1.0 的 wy 会磨掉 ~20% 前进速度(`tune-x1-steer.mjs`: 硬增益 40.1s →
+     软增益 35.9s, 偏差仅 0.19m);贴道偏差 0.18~0.20m, 护栏兜底仍在。
 - **起步与调速全平滑**: 发枪后 `curVx` 由斜率限幅(2.5 m/s²)加速到目标速度、
   倒计时期间指令清零(防抢跑)、比赛中拖动速度滑块不再产生指令阶跃——阶跃易造成
   踉跄, 踉跄正是斜向冲出车道的常见诱因。修复后混合比赛 0~1 次摔倒(此前 1-3 次)。
@@ -194,6 +214,8 @@ g1-race/
 ├── download_assets.sh    # 天工/X1 官方资产一键下载(复现 assets/)
 ├── convert_and_calib.py  # walk.pt→ONNX 转换 + 站立高度标定(资产已入库, 复现用)
 ├── sim2sim_check.py      # 新物种契约的 Python 级 sim2sim 验证(接入前先跑通它)
+├── x1_shoulder_check.py  # X1 两官方策略(leg/shoulder)的 Python 侧对照: 速度包线 + wy 敏感度
+├── tune-x1-steer.mjs     # X1 航向外环调参工具(扫 kpYaw/yawCap, 输出均时/偏差/摔倒)
 ├── src/
 │   ├── main.js           # 启动、多物种调度(各策略周期)、阵容、相机、HUD
 │   ├── robots.js         # 🧬 物种注册表: 模型/策略来源 + 观测/PD 契约 + 调研记录
@@ -206,7 +228,9 @@ g1-race/
 │   ├── pm01/pm_v2.xml + meshes/ + policy.onnx    # 众擎 PM01(官方模型 + 官方策略)
 │   ├── t1/T1_locomotion.xml + meshes/ + policy.onnx # Booster T1(官方模型, 权重已转 ONNX)
 │   ├── tk/tienkung.xml + meshes/ + policy.onnx  # 天工 Tienkung2-Lite(官方模型, walk.pt 已转 ONNX)
-│   ├── x1/xyber_x1_flat.xml + meshes/ + policy.onnx # 智元灵犀 X1(官方模型 + 官方 ONNX)
+│   ├── x1/xyber_x1_flat.xml + meshes/ + policy_shoulder.onnx + policy.onnx
+│   │                            # 智元灵犀 X1(官方模型 + 官方摆臂策略 rl_walk_leg_shoulder;
+│   │                            #   policy.onnx 保留旧 leg 版可随时切回)
 │   └── duck/scene_allcollisions.xml + robot_allcollisions.xml + meshes/ + policy.onnx
 │                                  # Pollen MicroDuck(官方模型 + 官方 velstand.onnx; 12 个大网格
 │                                  #   已从 1MB 上限抽稀到 4000 三角面以适配 WASM 2GB 堆)
