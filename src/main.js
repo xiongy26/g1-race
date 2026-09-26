@@ -10,7 +10,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import loadMujoco from '../vendor/mujoco/mujoco.js';
 import { CFG, PolicyRunner, PolicySession, steerCmd } from './policy.js';
 import { Sim, buildSceneXml, makeRng } from './sim.js';
-import { buildTrack, addLights, RobotVisual, TEAM_COLORS, laneY } from './scene.js';
+import { buildTrack, addLights, buildEnvironment, updateScenery, RobotVisual, TEAM_COLORS, laneY } from './scene.js';
 import { Race } from './race.js';
 import { RaceRecorder } from './recorder.js';
 import { SPECIES } from './robots.js';
@@ -23,7 +23,7 @@ function log(msg, cls = '') {
   if (cls) div.className = cls;
   bootlog.appendChild(div);
   bootlog.scrollTop = bootlog.scrollHeight;
-  $('bootbar').value = Math.min(99, $('bootbar').value + 5);
+  $('bootbar').value = Math.min(99, $('bootbar').value + 2);
 }
 
 // 主循环节拍: 各物种策略周期(20ms/10ms)的最小公因数
@@ -353,6 +353,7 @@ function renderTick() {
   lastRenderT = now;
   for (const r of app.robots) r.visual.update(r.sim.data);
   updateCamera(dt);
+  updateScenery(dt, now / 1000); // 云漂移/气球浮动
   updateHUD();
   const lx = app.robots.reduce((b, r) => (!b || r.x > b.x ? r : b), null)?.x ?? 0;
   app.sun.position.set(lx - 10, -8, 20);
@@ -452,6 +453,7 @@ async function main() {
     log('加载 MuJoCo WASM(约 10MB, 首次稍慢)...');
     app.mujoco = await loadMujoco();
 
+    log('获取全部物种资产(约 160MB)并逐模型编译, 本地也需约 1 分钟, 进度见下方逐条日志 ...');
     const assets = await loadAllAssets();
     app.sim = await Sim.load(app.mujoco, assets, log);
 
@@ -472,8 +474,8 @@ async function main() {
     canvasWrap.appendChild(app.renderer.domElement);
 
     app.scene = new THREE.Scene();
-    app.scene.background = new THREE.Color(0x9ec7e8);
-    app.scene.fog = new THREE.Fog(0x9ec7e8, 40, 120);
+    app.scene.background = new THREE.Color(0xbcd8ea);
+    app.scene.fog = new THREE.Fog(0xbcd8ea, 55, 240);
     app.camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 400);
     app.camera.up.set(0, 0, 1);
     app.camera.position.copy(camPos);
@@ -482,6 +484,7 @@ async function main() {
     app.controls.target.set(0, 0, 0.8);
     app.sun = addLights(app.scene);
     buildTrack(app.scene);
+    buildEnvironment(app.scene);
 
     app.race = new Race([], app.sim, null);
     app.recorder = new RaceRecorder({ getSceneCanvas: () => app.renderer.domElement });

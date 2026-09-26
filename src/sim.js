@@ -58,6 +58,10 @@ function inlineMjcfIncludes(xml, files, baseDir = '', depth = 0) {
   });
 }
 
+// 编译是同步重活(单物种注入+编译最长约 20s): 分块之间让出主线程一拍,
+// 让 bootlog 真正刷出进度, 避免页面冻结在上一条旧日志上造成"卡死"错觉。
+const breathe = () => new Promise((r) => setTimeout(r, 0));
+
 export class Sim {
   // assets: { g1: {xml, meshes:Map}, species: [{id, xml, meshes:Map}] }
   static async load(mujocoMod, assets, log) {
@@ -67,14 +71,34 @@ export class Sim {
     const vfs = new mujocoMod.MjVFS();
     sim.vfs = vfs;
 
+    // 逐文件注入: 每个文件之间让出一拍(单个 8.9MB 大文件的拷贝也要 2-3s,
+    // 不让出就会连续冻结十几秒), 每累计 ~10MB 刷一条进度日志。
+    async function inject(prefix, meshes, label) {
+      let done = 0, mb = 0, loggedMb = 0;
+      const total = meshes.size;
+      for (const [name, bytes] of meshes) {
+        vfs.addBuffer(prefix + name, bytes);
+        done++; mb += bytes.length;
+        if (done === total || mb - loggedMb >= 10 * 1048576) {
+          log(`${label} ${done}/${total}(${(mb / 1048576) | 0}MB) ...`);
+          await breathe();
+          loggedMb = mb;
+        } else {
+          await breathe();
+        }
+      }
+    }
+
     log('注入 G1 MJCF 与网格 ...');
     vfs.addBuffer('g1_29dof.xml', new TextEncoder().encode(assets.g1.xml));
-    for (const [name, bytes] of assets.g1.meshes) vfs.addBuffer('meshes/' + name, bytes);
-    log('编译 G1 模型(29 DoF + 36 网格)...');
+    await inject('meshes/', assets.g1.meshes, '注入 G1 网格');
+    log('编译 G1 模型(29 DoF + 36 网格), 请稍候 ...');
+    await breathe();
     sim.model = mujocoMod.MjModel.from_xml_string(buildSceneXml(), vfs);
     if (!sim.model) throw new Error('G1 MjModel 编译失败');
     sim.nq = sim.model.nq; sim.nu = sim.model.nu; sim.nv = sim.model.nv;
     log(`G1 就绪: nq=${sim.nq} nv=${sim.nv} nu=${sim.nu}`);
+    await breathe();
 
     // 各物种官方 MJCF(自带场景)直接编译
     sim.speciesModels = new Map();
@@ -91,7 +115,9 @@ export class Sim {
       if (fl > 1) console.log('DBG floors:', fl, 'include tags left:', (xml.match(/<include/g) || []).length);
       vfs.addBuffer(key, new TextEncoder().encode(xml));
       // 网格 VFS 键按物种加前缀: 不同厂商的网格文件可能重名(如 pelvis.STL)
-      for (const [name, bytes] of a.meshes) vfs.addBuffer(sp.id + '_meshes/' + name, bytes);
+      await inject(sp.id + '_meshes/', a.meshes, `注入 ${sp.name} 网格`);
+      log(`编译 ${sp.name} 模型, 请稍候 ...`);
+      await breathe();
       try {
         const m = mujocoMod.MjModel.from_xml_string(xml, vfs);
         m.opt.timestep = sp.dt; // 与官方部署一致(如 sim2sim 覆盖 timestep)
@@ -100,6 +126,7 @@ export class Sim {
       } catch (e) {
         log(`${sp.name} 模型编译失败: ${String(e.message).slice(0, 120)}`, 'err');
       }
+      await breathe();
     }
     return sim;
   }

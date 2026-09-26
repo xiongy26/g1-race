@@ -59,8 +59,9 @@ node server.js 8137        # 或任意静态服务器: python -m http.server 813
 # 浏览器打开 http://127.0.0.1:8137/
 ```
 
-> 必须通过 HTTP 访问(ES Module 与 WASM 跨域限制)。首次打开需编译 MuJoCo WASM
-> 与加载六套模型资产(智元 X1 网格约 37MB),耐心等几秒。
+> 必须通过 HTTP 访问(ES Module 与 WASM 跨域限制)。启动分两段开销: ~160MB 资产的
+> 本地传输(二次刷新走 ETag 协商缓存, 304 零传输) + 六套模型的网格注入与编译
+> (约 45s 的同步计算, 与传输无关; 进度会逐条刷出, 单段最长冻结 ~5s, 并非卡死)。
 
 ## 玩法
 
@@ -203,6 +204,7 @@ node server.js 8137        # 或任意静态服务器: python -m http.server 813
 
 ```bash
 node test-gaits.mjs         # 每物种 0.85×包线 25m 单测 + 六物种混合比赛(全自由物理)
+node test-boot-profile.mjs  # 启动剖析: 逐物种网格注入/模型编译耗时(诊断"打开慢")
 node test-straightline.mjs  # G1 六道六速直线跑回归(含 1.55 极限速度)
 node test-lanekeep.mjs      # 赛道保持回归: 六物种贴道跑 + 物理护栏兜底 + 混合比赛
 node test-speed-sweep.mjs   # G1 速度包线扫描
@@ -228,7 +230,9 @@ g1-race/
 │   ├── robots.js         # 🧬 物种注册表: 模型/策略来源 + 观测/PD 契约 + 调研记录
 │   ├── policy.js         # 契约化观测构建(6 种布局)、ONNX 会话、PD/位置舵机/保持关节
 │   ├── sim.js            # MuJoCo 加载、多物种模型编译(VFS 注入+补丁)、实例管理
-│   ├── scene.js          # three.js 赛道与机器人可视化(mjv 管线)
+│   ├── scene.js          # three.js 赛道与机器人可视化(mjv 管线) + 环境景观
+│   │                     #   (天空穹顶/太阳/漂云/远山剪影/草坪纹理/实例化树木/
+│   │                     #    双侧看台+彩色观众/起点拱门/广告围挡/彩旗/气球束)
 │   ├── recorder.js       # 比赛录制: WebGL+面板合成画布 -> MediaRecorder MP4/WebM 自动下载
 │   └── race.js           # 比赛状态机(倒计时/排名/摔倒罚时/结算)
 ├── assets/

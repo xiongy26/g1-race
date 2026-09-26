@@ -1,4 +1,6 @@
 // 极简静态文件服务器(node server.js [port])
+// 缓存策略: ETag 协商缓存(no-cache) —— 每次刷新都带 If-None-Match 回来验证,
+// 未变更的文件返回 304(约 160MB 资产的二次刷新只传几十 KB 的校验请求)。
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -17,12 +19,20 @@ http.createServer((req, res) => {
   if (p.endsWith('/')) p += 'index.html';
   const file = path.normalize(path.join(root, p));
   if (!file.startsWith(root)) { res.writeHead(403); res.end(); return; }
-  fs.readFile(file, (err, data) => {
-    if (err) { res.writeHead(404); res.end('404'); return; }
-    res.writeHead(200, {
+  fs.stat(file, (err, st) => {
+    if (err || !st.isFile()) { res.writeHead(404); res.end('404'); return; }
+    const etag = `"${st.size.toString(16)}-${Math.round(st.mtimeMs).toString(16)}"`;
+    const headers = {
       'Content-Type': mime[path.extname(file).toLowerCase()] || 'application/octet-stream',
-      'Cache-Control': 'no-store',
-    });
-    res.end(data);
+      'Cache-Control': 'no-cache',
+      ETag: etag,
+    };
+    if (req.headers['if-none-match'] === etag) {
+      res.writeHead(304, headers);
+      res.end();
+      return;
+    }
+    res.writeHead(200, { ...headers, 'Content-Length': st.size });
+    fs.createReadStream(file).pipe(res);
   });
 }).listen(port, '127.0.0.1', () => console.log(`serving ${root} at http://127.0.0.1:${port}`));
