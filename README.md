@@ -106,9 +106,12 @@ node server.js 8137        # 或任意静态服务器: python -m http.server 813
 │    · 动作 -> 目标角 = a·actionScale + 默认角(各物种自己的缩放/默认站姿)
 ├─ three.js: mjv_updateScene 管线取每个 geom 世界位姿(官方 STL 网格), 赛道/拱门/阴影
 ├─ 录制(src/recorder.js): 离屏合成画布每帧叠两层 —— WebGL 画布 + SVG foreignObject
-│   光栅化的面板层(内嵌页面样式表, MutationObserver 标脏 + 50ms 节流, 面板静止零开销);
+│   光栅化的面板层(内嵌页面样式表, MutationObserver 标脏 + 50ms 节流, 面板静止零开销;
+│   画布按物理像素创建[×devicePixelRatio 上限 2, 宽上限 2560], 面板按 CSS 像素布局
+│   整体 scale 放大光栅化, 码率按像素数给足[10~24Mbps, 1080p60≈16Mbps]);
 │   captureStream(60) -> MediaRecorder 编码, Chrome/Edge/Safari 直出 H.264 MP4,
-│   其余回退 WebM; 录制控件带 data-norec 不会出现在视频里
+│   其余回退 WebM; 控制条「面板」勾选框决定是否合成面板层(录制中可实时切换, 默认含),
+│   录制控件带 data-norec 不会出现在视频里
 ├─ 航向保持外环(横向 PD 级联): 车道偏差 P + 横向速度阻尼 -> 期望航向 -> 航向误差 P
 │   + 偏航阻尼 -> 各策略的 yaw 角速度指令(按物种调增益; X1 摆臂策略对 wy 极敏感,
 │   需"轻手" kpYaw=0.15+cap 0.06, 见已知要点);

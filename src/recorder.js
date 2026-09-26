@@ -5,15 +5,25 @@
 // 原理:
 //   1. 离屏合成画布: 每帧先画 WebGL 画布。onFrame 必须在 renderer.render 之后
 //      的同一任务里调用, 此时 WebGL 绘图缓冲仍有效, 无需 preserveDrawingBuffer;
+//      画布按物理像素(×devicePixelRatio, 宽度上限 2560)创建 —— 按 CSS 像素录制
+//      会把高分屏画面先降采样再编码, 缩放开 125%/150% 时细节不可逆丢失;
 //   2. 面板层: 把页面面板克隆进 SVG foreignObject(内嵌页面 <style> + 根节点补上
 //      CSS 变量与 body 字体), 用 <img> 光栅化到透明画布后叠加在 3D 画面上。
+//      面板按 CSS 像素布局, 整体 scale 放大到物理像素输出, 文字按设备分辨率光栅化。
 //      MutationObserver 标脏 + 50ms 节流, 面板静止时零开销, 不拖累 RTF;
 //   3. 合成画布 captureStream(60) -> MediaRecorder 编码, 停止时 Blob 自动下载。
-// 带 data-norec 属性的元素(录制徽标/提示条)不会进入视频。
+//      码率按物理像素数给足(1080p60 ≈ 16Mbps, 上限 24Mbps), 避免 60fps 下每帧
+//      码率减半导致的压缩糊化。
+// 控制条「面板」勾选框(动态读取 #rec-panels)决定是否合成面板层, 录制中可实时切换;
+// 带 data-norec 属性的元素(录制徽标/提示条/勾选框本身)不会进入视频。
 
 const PANEL_SELECTOR = '#hdr, #statusbar, #board, #ctrl, #countdown, #hint, #results';
-const MAX_WIDTH = 1920;        // 合成画布宽度上限: 4K 屏也压到 1080p 级别编码
+const MAX_DPR = 2;             // 录制像素比上限, 与渲染器 setPixelRatio 一致(不超过 3D 画布实际分辨率)
+const MAX_PHYS_WIDTH = 2560;   // 合成画布物理像素宽度上限: 2K/4K 屏压到 1440p 级别实时编码
 const OVERLAY_MIN_MS = 50;     // 面板层重绘最小间隔, 约 20Hz(排名板本身 20Hz 刷新)
+const MIN_BPS = 10e6;          // 码率下限
+const MAX_BPS = 24e6;          // 码率上限(1440p60 级别)
+const BITS_PER_PX = 8;         // 每物理像素的比特预算(60fps 下 H.264 不发糊的经验值)
 const CSS_VARS = ['--bg', '--panel', '--line', '--line-bright', '--text', '--dim', '--amber', '--red', '--green'];
 
 // MP4 优先逐个探测, 全部不支持才回退 WebM
@@ -32,6 +42,7 @@ export class RaceRecorder {
   constructor({ getSceneCanvas }) {
     this.getSceneCanvas = getSceneCanvas;
     this.recording = false;
+    this.includePanels = true; // 是否把面板层合成进视频, 勾选框与 main.js 实时改写
     this.lastInfo = null;
 
     this.comp = document.createElement('canvas');
@@ -75,20 +86,23 @@ export class RaceRecorder {
     if (!picked) { this._toast('当前浏览器没有可用的视频编码器', true); return; }
     const [mime, ext] = picked;
     this._ext = ext;
+    this.includePanels = document.getElementById('rec-panels')?.checked ?? true;
 
+    // 按物理像素定合成画布尺寸(显示缩放 125%/150% 下 innerWidth 只是 CSS 像素)
     const cssW = window.innerWidth, cssH = window.innerHeight;
-    const scale = Math.min(1, MAX_WIDTH / cssW);
-    this.comp.width = Math.round(cssW * scale);
-    this.comp.height = Math.round(cssH * scale);
-    this.overlay.width = cssW;
-    this.overlay.height = cssH;
+    const dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
+    const scale = dpr * Math.min(1, MAX_PHYS_WIDTH / (cssW * dpr));
+    this.comp.width = evenize(Math.round(cssW * scale));
+    this.comp.height = evenize(Math.round(cssH * scale));
+    this.overlay.width = this.comp.width;
+    this.overlay.height = this.comp.height;
     this.overlayReady = false;
     this.overlayFailed = false;
 
     let rec;
     try {
       const px = this.comp.width * this.comp.height;
-      const bps = Math.round(Math.min(16e6, Math.max(6e6, px * 5)));
+      const bps = Math.round(Math.min(MAX_BPS, Math.max(MIN_BPS, px * BITS_PER_PX)));
       rec = new MediaRecorder(this.comp.captureStream(60), { mimeType: mime, videoBitsPerSecond: bps });
     } catch (e) {
       this._toast('创建编码器失败: ' + e.message, true);
@@ -106,8 +120,9 @@ export class RaceRecorder {
     this.dirty = true;
     this._obs.observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true });
     this._onResize = () => {
-      this.overlay.width = window.innerWidth;
-      this.overlay.height = window.innerHeight;
+      // 码流分辨率中途不可变, 合成画布保持起始尺寸; 只按当前视口重光栅面板层
+      this.overlay.width = this.comp.width;
+      this.overlay.height = this.comp.height;
       this.overlayReady = false;
       this.dirty = true;
     };
@@ -118,7 +133,8 @@ export class RaceRecorder {
     this._timer = setInterval(() => this._tickBadge(), 250);
     this._tickBadge();
     window.__recState = 'recording';
-    this._toast(mime.includes('mp4') ? '开始录制 MP4, 再点一次或按 R 结束' : `开始录制(${ext} 容器, 当前浏览器不支持 MP4 直录)`);
+    this._toast((mime.includes('mp4') ? '开始录制 MP4' : `开始录制(${ext} 容器, 当前浏览器不支持 MP4 直录)`)
+      + (this.includePanels ? ', 再点一次或按 R 结束' : '(纯 3D 画面), 再点一次或按 R 结束'));
   }
 
   stop() {
@@ -143,9 +159,9 @@ export class RaceRecorder {
     const gl = this.getSceneCanvas();
     if (gl && gl.width && gl.height) this.compCtx.drawImage(gl, 0, 0, this.comp.width, this.comp.height);
     else this.compCtx.clearRect(0, 0, this.comp.width, this.comp.height);
-    if (this.overlayReady) this.compCtx.drawImage(this.overlay, 0, 0, this.comp.width, this.comp.height);
+    if (this.includePanels && this.overlayReady) this.compCtx.drawImage(this.overlay, 0, 0, this.comp.width, this.comp.height);
     const now = performance.now();
-    if (this.dirty && !this.rasterBusy && !this.overlayFailed && now - this.lastRasterT >= OVERLAY_MIN_MS) {
+    if (this.includePanels && this.dirty && !this.rasterBusy && !this.overlayFailed && now - this.lastRasterT >= OVERLAY_MIN_MS) {
       this._rasterize();
     }
   }
@@ -251,7 +267,11 @@ export class RaceRecorder {
 
   // 把面板克隆进 foreignObject: 内嵌页面样式表, 根节点补齐 CSS 变量与 body 字体
   // (样式选择器 #hdr/#board 等直接生效; fixed 定位改 absolute —— wrapper 与视口同尺寸同原点)
-  _buildOverlaySvg(w, h) {
+  // 面板按 CSS 像素布局, 整体 transform 放大到物理像素输出 —— 否则高分屏下面板
+  // 先按 CSS 尺寸光栅化再拉伸进物理像素画布, 文字会糊
+  _buildOverlaySvg(outW, outH) {
+    const cssW = window.innerWidth, cssH = window.innerHeight;
+    const scale = cssW ? outW / cssW : 1;
     const wrapper = document.createElement('div');
     wrapper.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
     const rs = getComputedStyle(document.documentElement);
@@ -264,11 +284,13 @@ export class RaceRecorder {
     wrapper.style.fontSize = bs.fontSize;
     wrapper.style.lineHeight = bs.lineHeight;
     wrapper.style.color = bs.color;
-    wrapper.style.width = w + 'px';
-    wrapper.style.height = h + 'px';
+    wrapper.style.width = cssW + 'px';
+    wrapper.style.height = cssH + 'px';
     wrapper.style.position = 'relative';
     wrapper.style.overflow = 'hidden';
     wrapper.style.background = 'transparent';
+    wrapper.style.transformOrigin = '0 0';
+    wrapper.style.transform = 'scale(' + scale + ')';
 
     const styleEl = document.createElement('style');
     styleEl.textContent = collectPageCss();
@@ -287,7 +309,7 @@ export class RaceRecorder {
     }
 
     const xhtml = new XMLSerializer().serializeToString(wrapper);
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">`
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${outW}" height="${outH}">`
       + `<foreignObject width="100%" height="100%">${xhtml}</foreignObject></svg>`;
     return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
   }
@@ -317,3 +339,6 @@ function collectPageCss() {
   }
   return css;
 }
+
+// H.264 编码要求宽高为偶数
+function evenize(n) { return Math.max(2, Math.round(n / 2) * 2); }

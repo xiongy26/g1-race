@@ -441,6 +441,11 @@ function wireUI() {
     $('btn-pause').textContent = app.paused ? '继续' : '暂停';
   };
   $('btn-rec').onclick = () => app.recorder.toggle();
+  $('rec-panels').onchange = (e) => {
+    if (!app.recorder) return;
+    app.recorder.includePanels = e.target.checked;
+    app.recorder.dirty = true; // 录制中重新勾上时立即重光栅面板层, 不等下次 DOM 变更
+  };
   window.addEventListener('keydown', (e) => {
     if (e.code === 'Space') { e.preventDefault(); $('btn-start').click(); }
     if (e.code === 'KeyR') { e.preventDefault(); app.recorder?.toggle(); }

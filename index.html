@@ -81,6 +81,10 @@
   button.primary:hover { filter: brightness(1.1); color: #14100a; }
   #btn-rec.rec { border-color: var(--red); color: var(--red); background: rgba(255, 69, 69, 0.10); }
   #btn-rec.rec:hover { border-color: var(--red); color: var(--red); }
+  #rec-opt { display: flex; align-items: center; gap: 8px; }
+  #rec-opt label { display: inline-flex; align-items: center; gap: 4px; font-size: 11px;
+                   color: var(--dim); cursor: pointer; white-space: nowrap; user-select: none; }
+  #rec-opt input { accent-color: var(--amber); margin: 0; cursor: pointer; }
 
   #rec-toast { position: fixed; top: 58px; left: 50%; transform: translate(-50%, -6px);
     background: var(--panel); border: 1px solid var(--line-bright); color: var(--text);
@@ -231,13 +235,18 @@
   </div>
   <div class="cell">
     <span class="lbl">录制</span>
-    <button id="btn-rec">● 录制 MP4</button>
+    <div id="rec-opt">
+      <button id="btn-rec">● 录制 MP4</button>
+      <label data-norec title="勾选后标题栏/排名板/控制条等面板合成进视频, 取消则只录 3D 画面">
+        <input type="checkbox" id="rec-panels" checked>面板
+      </label>
+    </div>
   </div>
 </div>
 
 <div id="hint">
   <b>25m</b> 跑道 · 每次摔倒罚时 <b>2s</b> · 空格键重新发枪<br>
-  <b>R</b> 键开始/停止录制(含面板, 停止自动下载) · 「自由」视角下可拖拽旋转 / 滚轮缩放
+  <b>R</b> 键开始/停止录制(停止自动下载; 控制条可勾选是否含面板) · 「自由」视角下可拖拽旋转 / 滚轮缩放
 </div>
 
 <div id="results">
