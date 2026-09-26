@@ -1,28 +1,41 @@
 # 🏃 双足短跑大赛(Bipedal Sprint Race)
 
-在浏览器里让 **3 种真实双足机器人**同场进行 25 米短跑比赛:
+在浏览器里让 **5 种真实双足机器人**同场进行 25 米短跑比赛:
 
 | 物种 | 速度包线 | 模型来源 | 策略来源 |
 |---|---|---|---|
 | 🤖 Unitree G1(29 DoF) | 1.55 m/s | unitree_ros 官方 MJCF+网格 | [g1_deploy_mujoco](https://github.com/RoboCubPilot/g1_deploy_mujoco) ONNX |
 | 🦾 众擎 PM01(23 DoF) | 1.00 m/s | [engineai_rl_lab](https://github.com/engineai-robotics/engineai_rl_lab) 官方 MJCF+网格 | 同仓库官方 AMP 速度策略 ONNX(`model_19999.onnx`) |
 | 🦿 Booster T1(12 DoF) | 1.20 m/s | [booster_gym](https://github.com/BoosterRobotics/booster_gym) 官方 MJCF+网格 | 同仓库官方 `T1.pt`(已转 ONNX) |
+| 🧑‍🚀 天工 Tienkung2-Lite(20 DoF) | 1.00 m/s | [TienKung-Lab](https://github.com/Open-X-Humanoid/TienKung-Lab) 官方 MJCF+网格(BSD-3) | 同仓库官方 `Exported_policy/walk.pt`(TorchScript, 已转 ONNX) |
+| 🧍 智元灵犀 X1(12+17 DoF) | 0.85 m/s | [agibot_x1_infer](https://github.com/AgibotTech/agibot_x1_infer) 官方 serial MJCF+网格 | 同仓库官方 `rl_walk_leg.onnx` + `rl_x1_sim.yaml` 部署契约 |
 
 **收录标准:官方机器人模型文件 + 官方策略模型,两者齐备才收录;缺一不加。**
 每一台都由自己的神经网络策略(ONNX @ onnxruntime-web)在 50/100Hz 闭环控制,
 全部自由物理(无任何骨盆/轨道辅助)。物理由 **MuJoCo 3.14 WebAssembly** 求解,
 three.js 渲染,纯前端本地运行。
 
-### 调研记录(2026-09,为什么是这三台)
+### 调研记录(2026-09,为什么是这五台)
 
 - ✅ **众擎 PM01**:`engineai_rl_lab` 同时提供官方 MJCF、STL 网格与训练导出的
   AMP 速度策略 ONNX + `params/env.yaml`(观测契约逐条可对齐, 训练指令范围
   vx 0.5~0.8、yaw ±0.6, 观测各原始值无缩放)。
 - ✅ **Booster T1**:`booster_gym` 提供训练用官方 MJCF(`T1_locomotion.xml`)、部署配置
   `T1.yaml` 与 TorchScript 权重 `T1.pt`(本仓库用 CPU torch 转成 ONNX,数值误差 <1e-6)。
+- ✅ **天工 Tienkung2-Lite**(北京人形机器人创新中心):`TienKung-Lab`(BSD-3-Clause)
+  提供官方 MJCF(`tienkung2_lite/mjcf/tienkung.xml`)+ 21 STL + 官方预训练
+  `Exported_policy/walk.pt` + `legged_lab/scripts/sim2sim.py`(75 维观测×10 帧历史、
+  步态时钟、20 关节 isaac↔mujoco 映射逐条可对齐;walk.pt 已转 ONNX,数值误差 1.1e-6)。
+- ✅ **智元灵犀 X1**:`agibot_x1_infer` 推理仓库自带全套:官方 serial MJCF
+  (`model/mjcf/robot/xyber_x1/xyber_x1_serial.xml`)+ 网格 + 官方行走策略
+  `rl_walk_leg.onnx` + 部署配置 `rl_x1_sim.yaml`(47 维观测×66 帧历史、指令缩放、
+  PD/LPF/步态门控全部明文);`agibot_x1_train` 为同源训练代码。
 - ❌ **智元 A2**:官方只放了 X2 的 URDF,无 A2 模型;无任何公开 A2 运动策略 → 不加。
 - ❌ **优必选 Walker S2**:无公开的模型+策略对 → 不加。
-- ❌ **MicroDuck**:无公开资产 → 不加。
+- ❌ **MicroDuck**(Pollen Robotics/HuggingFace):官方模型(`microduck_rl` 的
+  `robot_walk.xml`+网格+61 维观测契约)齐备,但**官方策略权重只发布在 HuggingFace Hub**
+  (`pollen-robotics/microduck-policies`),本环境网络不可达(直连/mirror/代理均失败),
+  wandb 训练项目私有 → 权重到手即可按本仓库流程接入,暂不加。
 - ❌ **傅里叶 GR-1/N1**:模型(Wiki-GRx-Models/Menagerie)与权重(Wiki-GRx-Deploy 的
   jit 策略)都有,但策略输入契约锁在闭源 SDK(actor+encoder 双网络)或多层配置里,
   无法可靠对齐 → 暂不加,契约公开后即可按本仓库的物种接入流程补上。
@@ -36,7 +49,7 @@ node server.js 8137        # 或任意静态服务器: python -m http.server 813
 ```
 
 > 必须通过 HTTP 访问(ES Module 与 WASM 跨域限制)。首次打开需编译 MuJoCo WASM
-> 与加载三套模型资产,耐心等几秒。
+> 与加载五套模型资产(智元 X1 网格约 37MB),耐心等几秒。
 
 ## 玩法
 
@@ -49,7 +62,7 @@ node server.js 8137        # 或任意静态服务器: python -m http.server 813
 | 控件 | 说明 |
 |---|---|
 | 机器人数 | 2~6 台同场竞技(默认 6) |
-| 阵容 | 三强混战(默认) / 全 G1 / 随机 |
+| 阵容 | 五强混战(默认) / 全 G1 / 随机 |
 | 目标速度 | 0.30~1.55 m/s, **按各物种包线等比缩放** |
 | 仿真倍速 | 0.5× / 1× / 2× / 3× / 4× |
 | 视角 | 跟随领跑(低机位) / 全景 / 自由(拖拽旋转、滚轮缩放) |
@@ -60,16 +73,23 @@ node server.js 8137        # 或任意静态服务器: python -m http.server 813
 浏览器
 ├─ MuJoCo 3.14 WASM(@mujoco/mujoco 官方绑定)
 │    · 每物种一份 MjModel(官方 MJCF 原版 + 最小运行时补丁), 每台机器人独立 MjData
-│    · 关节空间 PD 力矩控制(各物种自己的 kp/kd/力矩限幅/步长: G1/T1 500Hz, SA01 1kHz)
+│    · 关节空间 PD/位置舵机控制(各物种自己的 kp/kd/力矩限幅/步长: G1/T1/X1 500Hz,
+│      SA01 1kHz, 天工 200Hz)
 ├─ ONNX Runtime Web(WASM 后端, 单线程)
-│    · 每物种独立策略 @ 各自频率(G1/T1 50Hz, SA01 100Hz), 观测契约逐条对齐官方部署代码:
+│    · 每物种独立策略 @ 各自频率(G1/T1/天工 50Hz, PM01/X1 100Hz), 观测契约逐条对齐
+│      官方部署代码:
 │      G1  : unitree_rl_gym 布局, 96×5 组优先堆叠 = 480
 │      SA01: [相位, 指令×2, 关节, 关节速度, 上次动作, 角速度, 欧拉角] 47×15 帧优先 = 705
 │      T1  : [重力投影, 角速度, 指令, 步态时钟, 关节, 关节速度, 上次动作] 47 单帧
+│      天工: [角速度, 重力投影, 指令, 关节, 关节速度, 上次动作, sin/cos(2πφ)×2,
+│              摆空相比例] 75×10 帧优先 = 750(全原始值无缩放)
+│      X1  : [sin/cos(2πφ), 指令×2 缩放, wy, 关节, 关节速度, 上次动作, 角速度, 欧拉角]
+│              47×66 帧优先 = 3102(首帧整段填充, |指令|≤0.05 步态相位清零)
 │    · 动作 -> 目标角 = a·actionScale + 默认角(各物种自己的缩放/默认站姿)
 ├─ three.js: mjv_updateScene 管线取每个 geom 世界位姿(官方 STL 网格), 赛道/拱门/阴影
 ├─ 航向保持外环(横向 PD 级联): 车道偏差 P + 横向速度阻尼 -> 期望航向 -> 航向误差 P
-│   + 偏航阻尼 -> 各策略的 yaw 角速度指令; 赛道两侧另有物理挡墙兜底(红白路缘)
+│   + 偏航阻尼 -> 各策略的 yaw 角速度指令(按物种调增益, X1 需强增益 kpYaw=3.0);
+│   赛道两侧另有物理挡墙兜底(红白路缘)
 └─ 比赛逻辑: 倒计时发枪(倒计时期间指令清零防抢跑)、实时排名、摔倒罚时扶起、结算面板
 ```
 
@@ -78,7 +98,7 @@ node server.js 8137        # 或任意静态服务器: python -m http.server 813
 - **G1 策略极限 1.55 m/s**;速度指令更高时起步必摔(详见 `test-speed-sweep.mjs`)。
 - **PM01 速度包线 1.0 m/s**:官方 env.yaml 训练指令范围 vx 0.5~0.8(观测原始值
   无缩放), sim2sim 下策略只跟踪六成(0.8 指令实跑 ~0.52)。给更高指令可再提速:
-  1.0/1.1 指令稳定完赛(实跑 0.68~0.77), 1.2 起步必摔, ≥1.11 随机中段摔。
+  1.0/1.1 稳定完赛(实跑 0.68~0.77), 1.2 起步必摔, ≥1.11 随机中段摔。
   `maxV` 取 1.0, 比赛 ±6% 抖动后最坏 1.06, 留足安全边际(实际均速 ~0.68, 比原
   0.8 包线快 ~30%)。
 - **G1 的策略顺序 ≠ mujoco 顺序**:默认角必须经 `policyToXml` 重排成 mujoco 顺序
@@ -87,31 +107,54 @@ node server.js 8137        # 或任意静态服务器: python -m http.server 813
   仿真时间 / cycle_time(0.8s) 计算, 帧优先堆叠 15 帧(与 G1 的组优先不同)。
 - **T1 的步态门控**:指令平滑(每周期 ±period 限幅), |cmd|≈0 时 cos/sin 与指令项
   全部清零; 关节速度归一 0.1(非 0.05)。
+- **天工(TK)的位置舵机**:官方 MJCF 用 `<position kp=...>` 执行器(kp=训练刚度,
+  阻尼由关节被动 damping 提供), sim2sim 直接 `ctrl=目标角`。本仓库显式 PD
+  (motor+kd)在 dt=0.005 下数值发散, 因此契约支持 `actuatorMode='position'`
+  原样保留位置舵机、仅补 `forcerange`(=训练 effort 限幅)。验证: Python 侧
+  0.8 m/s 指令实测 0.81 m/s(跟踪 ~1:1, 全场最快); obs 侧映射是 sim2sim 的
+  `mujoco_to_isaac`(与动作侧 `isaac_to_mujoco` 互逆, 接反立即发散)。
+- **智元 X1 的"组合控制器"**:官方 rl_walk_leg 策略只控 12 个腿关节, 上肢 17 个
+  执行器由 pd_zero(全身)+pd_stand(肩/肘非零目标)按官方增益表保持——契约用
+  `ctrlIdx/qposIdx` 定位腿执行器、`holdJoints` 保持上肢。66 帧历史首帧须整段填充
+  当前观测(动作段清零, 与 rl_controller.cc 首帧行为一致), 否则起步踉跄。
+- **X1 的腕部 armature 补丁**:官方 MJCF 无 armature(1kHz 隐式积分稳定), 本仓库
+  500Hz 显式 PD 对 5.7e-7 量级腕部惯量数值发散, 给 4 个腕关节加
+  `armature="0.002"`(电机转子经减速器的等效惯量, 量级合理, 不改变步行物理)。
+- **跨物种网格重名**: 不同厂商 MJCF 网格可能重名(如 G1 与天工都有 `pelvis.STL`),
+  VFS 键按物种加前缀(`<id>_meshes/...`), MJCF 的 meshdir 由 xmlPatches 重写。
+- **护栏 contype/conaffinity**: X1 用碰撞位分离左右腿(脚 contype 2/4), 护栏必须
+  显式 `contype="1" conaffinity="7"` 才能挡住它; 对默认 1/1 的物种无影响。
 - **T1 官方 MJCF 地面 condim=1(无摩擦)**, 直接用会打滑, 运行时打补丁换成摩擦地面。
 - **`mjvGeom.dataid` 损坏**: 本 WASM 构建对 mesh geom 返回 2 倍 dataid, 需用
   `model.geom_dataid[objid]` 还原。
-- **TorchScript → ONNX**: `T1.pt` 用 `torch.jit.load + torch.onnx.export`(动态 batch)
-  转换, 转换后与 torch 前向误差 <1e-6; 转换脚本思路见 RETRAIN.md。
+- **TorchScript → ONNX**: `T1.pt`/天工 `walk.pt` 用 `torch.jit.load +
+  torch.onnx.export`(动态 batch)转换, 转换后与 torch 前向误差 <1e-6;
+  转换脚本思路见 RETRAIN.md / convert_and_calib.py。
 - **rAF 不可靠**: 仿真由 4ms 定时器驱动、渲染由 rAF + 100ms 定时器兜底。
 - **跑出跑道问题的两层修复(2026-09-25)**:
   1. 航向外环从"纯跟踪 P 控制"升级为**横向 PD 级联**(车道偏差 P + 横向速度阻尼 D →
      期望航向 → 航向误差 P + 偏航阻尼 D)。纯 P 纯跟踪在高速下欠阻尼会画 S 形;
-     T1 策略的 yaw 跟踪迟缓且超调大, 需按物种调低航向增益(`species.steer`,
-     见 `makeSteer`)。修复后 G1 ≤0.14m / PM01 ≤0.13m / T1 ≤0.42m 最大横向偏差。
+     T1/X1 策略的 yaw 跟踪迟缓/漂移, 需按物种调低/调高航向增益(`species.steer`,
+     见 `makeSteer`; X1 默认增益 10 种子中 1 摔, kpYaw=3.0 后 20 种子全净)。
+     修复后各物种 25m 最大横向偏差: G1 ≤0.14m / PM01 ≤0.15m / T1 ≤0.42m /
+     天工 ≤0.09m / X1 ≤0.16m。
   2. **物理护栏兜底**: 每个物种的 MJCF 在编译前注入赛道两侧挡墙(`sim.js`
      `fenceGeomsXml`, 内侧面 y=±4.20), 视觉上对应红白路缘。正常贴道跑永不接触;
      摔倒/打滑/极端漂移时被挡在跑道内。无头测试用"关闭外环的 G1"(固有弧线偏置)
      验证护栏兜底有效。
 - **起步与调速全平滑**: 发枪后 `curVx` 由斜率限幅(2.5 m/s²)加速到目标速度、
   倒计时期间指令清零(防抢跑)、比赛中拖动速度滑块不再产生指令阶跃——阶跃易造成
-  踉跄, 踉跄正是斜向冲出车道的常见诱因。修复后混合比赛 0 摔倒(此前 1-3 次)。
+  踉跄, 踉跄正是斜向冲出车道的常见诱因。修复后混合比赛 0~1 次摔倒(此前 1-3 次)。
+- **无头回归与页面同闭环**: 混合赛测试与页面一样先站立(倒计时)再斜坡起步;
+  测试里所有 `steerCmd` 调用必须传 `species.steer`(漏传 = 用默认增益, X1 会摔——
+  本次五物种化踩过)。
 
 ## 回归测试
 
 ```bash
-node test-gaits.mjs         # 每物种 0.85×包线 25m 单测 + 三物种混合比赛(全自由物理)
+node test-gaits.mjs         # 每物种 0.85×包线 25m 单测 + 五物种混合比赛(全自由物理)
 node test-straightline.mjs  # G1 六道六速直线跑回归(含 1.55 极限速度)
-node test-lanekeep.mjs      # 赛道保持回归: 三物种贴道跑 + 物理护栏兜底 + 混合比赛
+node test-lanekeep.mjs      # 赛道保持回归: 五物种贴道跑 + 物理护栏兜底 + 混合比赛
 node test-speed-sweep.mjs   # G1 速度包线扫描
 ```
 
@@ -121,21 +164,26 @@ node test-speed-sweep.mjs   # G1 速度包线扫描
 g1-race/
 ├── index.html            # UI / importmap / 启动遮罩 / 阵容选择
 ├── server.js             # 极简静态服务器(node server.js [port])
-├── test-gaits.mjs        # 无头回归: 三物种 25m 单测 + 混合比赛
+├── test-gaits.mjs        # 无头回归: 五物种 25m 单测 + 混合比赛
 ├── test-straightline.mjs # G1 直线跑回归
 ├── test-lanekeep.mjs     # 赛道保持回归: 贴道跑 + 护栏兜底 + 混合比赛
 ├── RETRAIN.md            # 提速重训指南 + 新物种接入流程
+├── download_assets.sh    # 天工/X1 官方资产一键下载(复现 assets/)
+├── convert_and_calib.py  # walk.pt→ONNX 转换 + 站立高度标定(资产已入库, 复现用)
+├── sim2sim_check.py      # 新物种契约的 Python 级 sim2sim 验证(接入前先跑通它)
 ├── src/
 │   ├── main.js           # 启动、多物种调度(各策略周期)、阵容、相机、HUD
 │   ├── robots.js         # 🧬 物种注册表: 模型/策略来源 + 观测/PD 契约 + 调研记录
-│   ├── policy.js         # 契约化观测构建(3 种布局)、ONNX 会话、PD 控制
+│   ├── policy.js         # 契约化观测构建(5 种布局)、ONNX 会话、PD/位置舵机/保持关节
 │   ├── sim.js            # MuJoCo 加载、多物种模型编译(VFS 注入+补丁)、实例管理
 │   ├── scene.js          # three.js 赛道与机器人可视化(mjv 管线)
 │   └── race.js           # 比赛状态机(倒计时/排名/摔倒罚时/结算)
 ├── assets/
 │   ├── g1_29dof.xml + meshes/ + policy.onnx     # Unitree G1(官方模型 + 第三方策略)
-│   ├── sa01/zq_sa01.xml + meshes/ + policy.onnx # 众擎 SA01(官方模型 + 官方策略)
-│   └── t1/T1_locomotion.xml + meshes/ + policy.onnx # Booster T1(官方模型, 权重已转 ONNX)
+│   ├── pm01/pm_v2.xml + meshes/ + policy.onnx    # 众擎 PM01(官方模型 + 官方策略)
+│   ├── t1/T1_locomotion.xml + meshes/ + policy.onnx # Booster T1(官方模型, 权重已转 ONNX)
+│   ├── tk/tienkung.xml + meshes/ + policy.onnx  # 天工 Tienkung2-Lite(官方模型, walk.pt 已转 ONNX)
+│   └── x1/xyber_x1_flat.xml + meshes/ + policy.onnx # 智元灵犀 X1(官方模型 + 官方 ONNX)
 └── vendor/               # 本地化的 mujoco-wasm / three / onnxruntime-web
 ```
 
@@ -143,7 +191,8 @@ g1-race/
 
 见 [RETRAIN.md](RETRAIN.md):只要 GitHub 上存在某机器人的官方 MJCF/URDF + 可部署
 策略权重(ONNX 或 TorchScript), 按"下载资产 → 对齐观测契约 → 转权重 → 注册物种"
-四步即可加入比赛, 运行时代码零改动。
+四步即可加入比赛, 运行时代码零改动(建议先用 `sim2sim_check.py` 在 Python 侧
+验证契约, 再移植到 `src/policy.js`)。
 
 ## 来源与致谢
 
@@ -152,6 +201,9 @@ g1-race/
   [RoboCubPilot/g1_deploy_mujoco](https://github.com/RoboCubPilot/g1_deploy_mujoco)(GPL-3.0)
 - 众擎 SA01:[engineai-robotics/engineai_legged_gym](https://github.com/engineai-robotics/engineai_legged_gym)
 - Booster T1:[BoosterRobotics/booster_gym](https://github.com/BoosterRobotics/booster_gym)
+- 天工 Tienkung2-Lite:[Open-X-Humanoid/TienKung-Lab](https://github.com/Open-X-Humanoid/TienKung-Lab)(BSD-3-Clause)
+- 智元灵犀 X1:[AgibotTech/agibot_x1_infer](https://github.com/AgibotTech/agibot_x1_infer) /
+  [AgibotTech/agibot_x1_train](https://github.com/AgibotTech/agibot_x1_train)
 - 物理引擎:[MuJoCo](https://mujoco.readthedocs.io)(Apache-2.0)
 - 推理引擎:[onnxruntime-web](https://github.com/microsoft/onnxruntime)(MIT)
 - 渲染:[three.js](https://threejs.org)(MIT)

@@ -17,19 +17,20 @@ ort.env.wasm.wasmPaths = pathToFileURL(path.join(ROOT, 'vendor/ort')).href + '/'
 
 const loadMujoco = (await imp('vendor/mujoco/mujoco.js')).default;
 const mj = await loadMujoco();
-const { Sim, buildSceneXml, makeRng } = await imp('src/sim.js');
-const { PolicyRunner, PolicySession, CFG, steerCmd } = await imp('src/policy.js');
+const { Sim, makeRng } = await imp('src/sim.js');
+const { PolicyRunner, PolicySession, steerCmd } = await imp('src/policy.js');
+const { SPECIES } = await imp('src/robots.js');
+const G1_CONTRACT = SPECIES[0].contract;
 
 const assets = {
-  xml: fs.readFileSync(path.join(ROOT, 'assets/g1_29dof.xml'), 'utf8'),
-  meshes: new Map(),
-  sceneXml: buildSceneXml(),
+  g1: { xml: fs.readFileSync(path.join(ROOT, 'assets/g1_29dof.xml'), 'utf8'), meshes: new Map() },
+  species: new Map(),
 };
-for (const name of [...new Set([...assets.xml.matchAll(/file="([^"]+\.STL)"/g)].map((m) => m[1]))]) {
-  assets.meshes.set(name, new Uint8Array(fs.readFileSync(path.join(ROOT, 'assets/meshes', name))));
+for (const name of [...new Set([...assets.g1.xml.matchAll(/file="([^"]+\.STL)"/g)].map((m) => m[1]))]) {
+  assets.g1.meshes.set(name, new Uint8Array(fs.readFileSync(path.join(ROOT, 'assets/meshes', name))));
 }
 const sim = await Sim.load(mj, assets, () => {});
-const session = new PolicySession(ort);
+const session = new PolicySession(ort, G1_CONTRACT);
 await session.load(new Uint8Array(fs.readFileSync(path.join(ROOT, 'assets/policy.onnx'))));
 
 const SIM_TIME = 45; // 每档最多仿 45s(25m @ 0.55m/s 也能完赛)
@@ -37,7 +38,7 @@ const SIM_TIME = 45; // 每档最多仿 45s(25m @ 0.55m/s 也能完赛)
 // cmdRamp: >0 按该斜率 m/s² 缓升; <0 两段式软起步(先 1.2 m/s 起步再按 |ramp| m/s² 缓升); 0 阶跃
 async function raceRobot(seed, laneY, targetSpeed, cmdRamp) {
   const robot = { data: new mj.MjData(sim.model) };
-  const runner = new PolicyRunner();
+  const runner = new PolicyRunner(G1_CONTRACT);
   sim.resetRobot(robot, laneY, makeRng(seed), 0.025, 0);
   const cmd = new Float32Array(3);
   let cmdNow = 0, fall = false, maxX = 0, maxV = 0;
@@ -49,11 +50,11 @@ async function raceRobot(seed, laneY, targetSpeed, cmdRamp) {
       else cmdNow = targetSpeed;
     }
     cmd[0] = cmdNow;
-    cmd[2] = steerCmd(robot.data.qpos, laneY);
-    runner.pushObs(runner.buildObs(robot.data.qpos, robot.data.qvel, cmd));
+    cmd[2] = steerCmd(robot.data.qpos, robot.data.qvel, laneY);
+    runner.buildAndPushObs(robot.data.qpos, robot.data.qvel, cmd, runner.period);
     const out = await session.inferAll([runner]);
     runner.applyAction(out[0]);
-    for (let k = 0; k < CFG.decimation; k++) {
+    for (let k = 0; k < 10; k++) { // decimation 10 (dt 0.002 x 10 = 20ms 策略周期)
       runner.pd(robot.data.qpos, robot.data.qvel, robot.data.ctrl);
       mj.mj_step(sim.model, robot.data);
     }

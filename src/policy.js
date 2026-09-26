@@ -10,6 +10,18 @@
 //  · 't1'  (booster deploy): obs(47) = [重力投影(3), 机体角速度(3), 指令(3),
 //          cos(2πφ), sin(2πφ), 关节位置-默认(12), 关节速度×0.1(12), 上次动作(12)],
 //          单帧, 指令平滑+步态门控, 策略周期 20ms。
+//  · 'tk'  (TienKung-Lab sim2sim): obs(75) = [机体角速度(3), 重力投影(3), 指令(3),
+//          关节位置-默认(20), 关节速度(20), 上次动作(20), sin(2πφ)×2, cos(2πφ)×2,
+//          摆空相比例(2)], 各值原始无缩放, 帧优先堆叠 10 帧 = 750, 策略周期 20ms。
+//          执行器为官方 MJCF 的 position 舵机(contract.actuatorMode='position'),
+//          ctrl 直接写目标角, 力矩限幅由 MJCF forcerange 把关。
+//  · 'x1'  (Agibot agibot_x1_infer rl_x1_sim.yaml + rl_controller.cc):
+//          obs(47) = [sin(2πφ), cos(2πφ), 指令 vx/vy×2.0 + wy×1.0,
+//          关节位置-默认(12), 关节速度×0.05(12), 上次动作(12), 机体角速度(3),
+//          欧拉角rpy(3)], 帧优先堆叠 66 帧 = 3102(首帧整段填充当前观测, 动作段清零),
+//          |指令|≤0.05 时步态相位清零(sw_mode), 策略周期 10ms。
+//          策略只控 12 腿关节(contract.ctrlIdx/qposIdx 定位), 上肢由 holdJoints
+//          按官方 pd_zero/pd_stand 组合增益保持; 目标角经一阶 LPF(lpfAlpha=wc·dt)。
 // 输出动作 -> 目标角 = a·actionScale + 默认角; 关节空间 PD(带力矩限幅)。
 // 比赛直道保持: 上层横向 PD 级联外环把车道偏差转成 cmd[2], 见 STEER。
 
@@ -18,6 +30,7 @@ export const CFG = {
   layout: 'g1',
   numActions: 29,
   numObs: 96,
+  inputLen: 480,
   stack: 5,
   stackMode: 'group',
   angVelScale: 0.2,
@@ -108,7 +121,18 @@ export class PolicyRunner {
       this.policyToXml = POLICY_TO_XML;
     } else {
       this.defaultMjc = Float32Array.from(contract.defaultDof);
-      this.policyToXml = Array.from({ length: this.NA }, (_, i) => i);
+      this.policyToXml = contract.policyToXml ?? Array.from({ length: this.NA }, (_, i) => i);
+    }
+    // 策略关节 -> 仿真索引(qpos/qvel/ctrl); 缺省 = 恒等(腿就是前 NA 个执行器)
+    this.qposIdx = contract.qposIdx ?? Array.from({ length: this.NA }, (_, i) => 7 + i);
+    this.qvelIdx = contract.qvelIdx ?? this.qposIdx.map((x) => x - 1);
+    this.ctrlIdx = contract.ctrlIdx ?? Array.from({ length: this.NA }, (_, i) => i);
+    // policyToXml 的逆映射(观测按策略顺序读 mujoco 关节用)
+    if (contract.layout === 'g1') {
+      this.xmlToPolicy = XML_TO_POLICY;
+    } else {
+      this.xmlToPolicy = [];
+      for (let i = 0; i < this.NA; i++) this.xmlToPolicy[this.policyToXml[i]] = i;
     }
     this.action = new Float32Array(this.NA);
     this.target = Float32Array.from(this.defaultMjc);
@@ -130,6 +154,9 @@ export class PolicyRunner {
     this.target.set(this.defaultMjc);
     this.input.fill(0);
     this.obsTime = 0;
+    this.firstFill = this.c.historyFillFirst ?? false;
+    // 动作 LPF 状态(从默认站姿起滤)
+    if (this.c.lpfAlpha) this.lpfTarget = Float32Array.from(this.defaultMjc);
     if (this.c.stackMode !== 'none') {
       this.frames = [];
       for (let i = 0; i < this.c.stack; i++) this.frames.push(new Float32Array(this.c.stackMode === 'pm01' ? 75 : (this.c.stackMode === 'frame' ? this.c.numSingleObs : this.c.numObs)));
@@ -153,6 +180,12 @@ export class PolicyRunner {
     } else if (c.layout === 'sa01') {
       this.obsTime += dtStep;
       single = this._obsSa01(qpos, qvel, cmd);
+    } else if (c.layout === 'tk') {
+      this.obsTime += dtStep;
+      single = this._obsTk(qpos, qvel, cmd);
+    } else if (c.layout === 'x1') {
+      this.obsTime += dtStep;
+      single = this._obsX1(qpos, qvel, cmd);
     } else {
       this.obsTime += dtStep;
       single = this._obsT1(qpos, qvel, cmd, dtStep);
@@ -173,8 +206,14 @@ export class PolicyRunner {
       }
       this.input[base] = cmd[0]; this.input[base + 1] = cmd[1]; this.input[base + 2] = cmd[2];
     } else if (c.stackMode === 'frame') {
-      this.frames.push(single);
-      if (this.frames.length > c.stack) this.frames.shift();
+      if (this.firstFill) {
+        // 官方首帧行为: 整段历史缓冲填充当前观测(X1 动作段已在 reset 清零)
+        for (const f of this.frames) f.set(single);
+        this.firstFill = false;
+      } else {
+        this.frames.push(single);
+        if (this.frames.length > c.stack) this.frames.shift();
+      }
       let o = 0;
       for (const f of this.frames) { this.input.set(f, o); o += c.numSingleObs; }
     } else if (c.stackMode === 'group') {
@@ -247,6 +286,60 @@ export class PolicyRunner {
     return s;
   }
 
+  // 天工 Tienkung2-Lite(与 TienKung-Lab legged_lab/scripts/sim2sim.py get_obs 逐条对齐):
+  // 全部原始值无缩放; 相位按策略步时钟 + 双脚偏移, sin/cos 各 2 维 + 摆空相比例 2 维。
+  _obsTk(qpos, qvel, cmd) {
+    const c = this.c;
+    const s = new Float32Array(c.numSingleObs);
+    const NA = c.numActions;
+    for (let i = 0; i < 3; i++) s[i] = qvel[3 + i];
+    const g = gravityOrientation(qpos[3], qpos[4], qpos[5], qpos[6]);
+    for (let i = 0; i < 3; i++) s[3 + i] = g[i];
+    for (let i = 0; i < 3; i++) s[6 + i] = cmd[i];
+    for (let i = 0; i < NA; i++) {
+      const x = this.xmlToPolicy[i];
+      s[9 + i] = qpos[7 + x] - this.defaultMjc[x];
+      s[9 + NA + i] = qvel[6 + x];
+      s[9 + 2 * NA + i] = this.action[i];
+    }
+    const t = this.obsTime;
+    const ph0 = ((t / c.gaitCycle + c.phaseOffsets[0]) % 1 + 1) % 1;
+    const ph1 = ((t / c.gaitCycle + c.phaseOffsets[1]) % 1 + 1) % 1;
+    s[9 + 3 * NA] = Math.sin(2 * Math.PI * ph0);
+    s[10 + 3 * NA] = Math.sin(2 * Math.PI * ph1);
+    s[11 + 3 * NA] = Math.cos(2 * Math.PI * ph0);
+    s[12 + 3 * NA] = Math.cos(2 * Math.PI * ph1);
+    s[13 + 3 * NA] = c.airRatios[0];
+    s[14 + 3 * NA] = c.airRatios[1];
+    for (let i = 0; i < c.numSingleObs; i++) s[i] = clamp(s[i], -c.clipObs, c.clipObs);
+    return s;
+  }
+
+  // 智元灵犀 X1(与 agibot_x1_infer rl_controller.cc ComputeObservation 逐条对齐):
+  // 指令缩放 vx/vy×2.0, wy×1.0; |指令|≤cmdThreshold 时相位清零(sw_mode 步态门控)。
+  _obsX1(qpos, qvel, cmd) {
+    const c = this.c;
+    const s = new Float32Array(c.numSingleObs);
+    const NA = c.numActions;
+    const active = Math.hypot(cmd[0], cmd[1], cmd[2]) > c.cmdThreshold;
+    const ph = active ? ((this.obsTime / c.cycleTime) % 1 + 1) % 1 : 0;
+    s[0] = Math.sin(2 * Math.PI * ph);
+    s[1] = Math.cos(2 * Math.PI * ph);
+    s[2] = cmd[0] * c.cmdScales.vx;
+    s[3] = cmd[1] * c.cmdScales.vy;
+    s[4] = cmd[2] * c.cmdScales.wy;
+    for (let i = 0; i < NA; i++) {
+      s[5 + i] = qpos[this.qposIdx[i]] - this.defaultMjc[i];
+      s[5 + NA + i] = qvel[this.qvelIdx[i]] * c.dofVelScale;
+      s[5 + 2 * NA + i] = this.action[i];
+    }
+    for (let i = 0; i < 3; i++) s[5 + 3 * NA + i] = qvel[3 + i] * c.angVelScale;
+    const rpy = quatToRpy(qpos[3], qpos[4], qpos[5], qpos[6]);
+    for (let i = 0; i < 3; i++) s[8 + 3 * NA + i] = rpy[i];
+    for (let i = 0; i < c.numSingleObs; i++) s[i] = clamp(s[i], -c.clipObs, c.clipObs);
+    return s;
+  }
+
   _obsT1(qpos, qvel, cmd, dtStep) {
     const c = this.c;
     // 指令平滑(每策略周期变化量限幅 ±period) + 步态门控
@@ -286,13 +379,32 @@ export class PolicyRunner {
     }
   }
 
-  // 关节空间 PD: 写 ctrl(执行器顺序), 带力矩限幅
+  // 关节空间 PD: 写 ctrl(执行器顺序), 带力矩限幅。
+  // actuatorMode='position': ctrl 直接写目标角(官方 MJCF position 舵机自闭环,
+  // 力矩限幅由 MJCF forcerange 把关); 'torque'(默认): 显式 PD。
+  // lpfAlpha: 目标角一阶低通(每物理步, alpha = wc·dt, X1 官方 wc=100)。
+  // holdJoints: 策略不控、由固定目标角+独立增益保持的执行器(如 X1 上肢)。
   pd(qpos, qvel, ctrl) {
     const c = this.c;
+    if (c.actuatorMode === 'position') {
+      for (let i = 0; i < this.NA; i++) ctrl[this.ctrlIdx[i]] = this.target[i];
+      return;
+    }
+    const lpf = this.lpfTarget;
+    if (lpf) {
+      for (let i = 0; i < this.NA; i++) lpf[i] += c.lpfAlpha * (this.target[i] - lpf[i]);
+    }
     for (let i = 0; i < this.NA; i++) {
-      const tau = c.kps[i] * (this.target[i] - qpos[7 + i]) - c.kds[i] * qvel[6 + i];
+      const tgt = lpf ? lpf[i] : this.target[i];
+      const tau = c.kps[i] * (tgt - qpos[this.qposIdx[i]]) - c.kds[i] * qvel[this.qvelIdx[i]];
       const lim = Array.isArray(c.tauLimit) ? c.tauLimit[i] : c.tauLimit;
-      ctrl[i] = clamp(tau, -lim, lim);
+      ctrl[this.ctrlIdx[i]] = clamp(tau, -lim, lim);
+    }
+    if (c.holdJoints) {
+      for (const h of c.holdJoints) {
+        const tau = h.kp * (h.target - qpos[h.qpos]) - h.kd * qvel[h.qvel];
+        ctrl[h.ctrl] = clamp(tau, -h.lim, h.lim);
+      }
     }
   }
 }

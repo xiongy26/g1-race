@@ -1,4 +1,4 @@
-// 全流程无头回归测试: 三物种(G1 / 众擎 SA01 / Booster T1)混合比赛。
+// 全流程无头回归测试: 全物种(G1 / PM01 / T1 / 天工 / 智元X1)混合比赛。
 // 每台机器人 = 官方 MJCF 模型 + 官方 ONNX 策略 + 契约化观测 + PD, 全部自由物理。
 // 运行: node test-gaits.mjs
 import fs from 'node:fs';
@@ -73,7 +73,7 @@ async function raceSolo(sp, vx, lane, seed) {
     t += TICK;
     const walking = s > 100; // 1s 站立
     if (s === 100) cmd[0] = vx;
-    cmd[2] = walking ? Math.max(-(sp.yawCap ?? 1), Math.min(sp.yawCap ?? 1, steerCmd(robot.data.qpos, robot.data.qvel, lane))) : 0;
+    cmd[2] = walking ? Math.max(-(sp.yawCap ?? 1), Math.min(sp.yawCap ?? 1, steerCmd(robot.data.qpos, robot.data.qvel, lane, sp.steer))) : 0;
     acc += TICK;
     let inferred = false;
     if (acc >= runner.period - 1e-9) {
@@ -103,9 +103,9 @@ for (const sp of SPECIES) {
   console.log(`  ${r.ok ? '✓' : '✗'} ${sp.emoji} ${sp.name}: x=${r.x.toFixed(1)}m t=${r.t.toFixed(1)}s ${r.fell ? '(摔倒)' : ''}`);
 }
 
-// 三物种×2 混合比赛(顶格速度)
-console.log('\n三物种混合比赛(顶格速度):');
-const robots = SPECIES.concat(SPECIES).map((sp, i) => {
+// 全物种单台混合比赛(顶格速度)
+console.log(`\n${SPECIES.length} 物种混合比赛(顶格速度):`);
+const robots = SPECIES.map((sp, i) => {
   const runner = new PolicyRunner(sp.contract);
   runner.period = sp.dt * sp.decim;
   return {
@@ -113,7 +113,7 @@ const robots = SPECIES.concat(SPECIES).map((sp, i) => {
     sim: sim.addRobot(sp),
     runner,
     cmd: new Float32Array(3),
-    laneY: (i - 2.5) * 1.35,
+    laneY: (i - (SPECIES.length - 1) / 2) * 1.35,
     name: `${i + 1}号·${sp.short}`,
     targetSpeed: Math.min(sp.maxV, sp.maxV * (1 + (makeRng(100 + i)() * 2 - 1) * 0.06)),
     curVx: 0,
@@ -127,18 +127,26 @@ const robots = SPECIES.concat(SPECIES).map((sp, i) => {
 
 const rng = makeRng(20260925);
 for (const r of robots) sim.resetRobot(r.sim, r.laneY, rng, r.noise, 0);
-for (const r of robots) r.curVx = r.targetSpeed;
+// 与页面一致: 指令按 2.5 m/s² 斜坡平滑起步(阶跃指令易摔, 且非比赛真实情况)
+let rampClock = 0;
 
 let raceClock = 0;
 for (let s = 0; s < Math.ceil(95 / TICK); s++) {
   raceClock += TICK;
+  rampClock += TICK;
+  // 与页面一致: 发枪前有站立期(倒计时), 之后才按斜率限幅平滑起步
+  if (s > 100) for (const r of robots) r.curVx += Math.max(-2.5 * TICK, Math.min(2.5 * TICK, r.targetSpeed - r.curVx));
+  void rampClock;
   for (const r of robots) {
     const q = r.sim.data.qpos;
     r.x = q[0];
     r.speed = r.sim.data.qvel[0];
     if (!r.finished && r.x >= 25) { r.finished = true; r.finishTime = raceClock + r.penalty; r.place = robots.filter((x) => x.finished).length; }
     if (r.finished && raceClock > r.finishTime + 1.0) r.curVx = 0;
-    if (q[2] < r.fallZ && !r.finished && !r.fallen) { r.fallen = true; r.fallenAt = raceClock; r.falls++; r.penalty += 2; }
+    if (q[2] < r.fallZ && !r.finished && !r.fallen) {
+      r.fallen = true; r.fallenAt = raceClock; r.falls++; r.penalty += 2;
+      console.log(`  [FALL] ${r.name} t=${raceClock.toFixed(1)} x=${q[0].toFixed(1)} y=${q[1].toFixed(2)} z=${q[2].toFixed(2)} vx=${r.sim.data.qvel[0].toFixed(2)} vy=${r.sim.data.qvel[1].toFixed(2)}`);
+    }
     if (r.fallen && raceClock - r.fallenAt >= 1.2) {
       sim.resetRobot(r.sim, r.laneY, rng, 0.02, Math.max(r.x, 0));
       r.runner.reset();
@@ -153,7 +161,7 @@ for (let s = 0; s < Math.ceil(95 / TICK); s++) {
     if (r.acc >= r.runner.period - 1e-9) {
       r.acc -= r.runner.period;
       r.cmd[0] = r.curVx;
-      r.cmd[2] = Math.max(-(r.species.yawCap ?? 1), Math.min(r.species.yawCap ?? 1, steerCmd(r.sim.data.qpos, r.sim.data.qvel, r.laneY)));
+      r.cmd[2] = Math.max(-(r.species.yawCap ?? 1), Math.min(r.species.yawCap ?? 1, steerCmd(r.sim.data.qpos, r.sim.data.qvel, r.laneY, r.species.steer)));
       r.runner.buildAndPushObs(r.sim.data.qpos, r.sim.data.qvel, r.cmd, r.runner.period);
       const outs = await sessions.get(r.species.id).inferAll([r.runner]);
       r.runner.applyAction(outs[0]);
@@ -177,5 +185,5 @@ standings.forEach((r, i) => {
   console.log(`   ${i + 1}. ${r.species.emoji} ${r.name.padEnd(12)} ${r.finished ? `${r.finishTime.toFixed(2)}s (均速 ${(25 / r.finishTime).toFixed(2)}m/s)` : `x=${r.x.toFixed(1)}m`}${r.falls ? ` 摔${r.falls}次` : ''}`);
 });
 const raceOk = standings.every((r) => r.finished);
-console.log(allOk && raceOk ? '\nALL PASS: 三物种全部完赛' : '\nFAILED');
+console.log(allOk && raceOk ? '\nALL PASS: 全部物种完赛' : '\nFAILED');
 process.exit(allOk && raceOk ? 0 : 1);

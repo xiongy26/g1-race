@@ -23,7 +23,7 @@ const { SPECIES } = await imp('src/robots.js');
 
 const TICK = 0.01;
 const LANE_W = 1.35;
-const laneY = (i) => (i - 2.5) * LANE_W;
+const laneY = (i) => (i - 2) * LANE_W;
 
 async function loadAssets() {
   const assets = { g1: null, species: new Map() };
@@ -64,6 +64,14 @@ for (const sp of SPECIES) {
 // 单台 25m: 记录横向偏差与是否触护栏。noSteer=true 时关掉外环, 用来验证护栏兜底。
 async function raceSolo(sp, vx, lane, seed, { noSteer = false } = {}) {
   const robot = sim.addRobot(sp);
+  try {
+    return await raceSoloInner(sp, vx, lane, seed, { noSteer, robot });
+  } finally {
+    try { robot.data.delete(); } catch (e) { /* 忽略 */ }
+  }
+}
+
+async function raceSoloInner(sp, vx, lane, seed, { noSteer = false, robot } = {}) {
   const runner = new PolicyRunner(sp.contract);
   runner.period = sp.dt * sp.decim;
   sim.resetRobot(robot, lane, makeRng(seed), sp.noise, 0);
@@ -116,8 +124,8 @@ console.log('2) G1 关掉航向外环(固有弧线跑偏) -> 验证物理护栏�
   console.log(`  ${ok ? '✓' : '✗'} 无外环 G1: |y|最大=${r.maxAbsY.toFixed(2)}m (护栏内侧面 ${FENCE_INNER_Y}m) ${r.hitFence ? '被护栏挡住, 未冲出 ✓' : '未触护栏, 未越界 ✓'}`);
 }
 
-console.log('3) 三物种混合比赛(顶格速度, 平滑起步, 与页面同一闭环):');
-const robots = SPECIES.concat(SPECIES).map((sp, i) => {
+console.log('3) 全物种混合比赛(顶格速度, 平滑起步, 与页面同一闭环):');
+const robots = SPECIES.map((sp, i) => {
   const runner = new PolicyRunner(sp.contract);
   runner.period = sp.dt * sp.decim;
   return {
@@ -161,10 +169,10 @@ for (let s = 0; s < raceTicks; s++) {
       r.fallen = false;
     }
   }
-  const running = true; // 该段模拟发枪后的比赛状态
+  const running = raceClock > 1.0; // 与页面一致: 先站立(倒计时)再发枪平滑起步
   for (const r of robots) {
     if (r.fallen) continue;
-    r.curVx += Math.max(-2.5 * TICK, Math.min(2.5 * TICK, r.targetSpeed - r.curVx));
+    if (running) r.curVx += Math.max(-2.5 * TICK, Math.min(2.5 * TICK, r.targetSpeed - r.curVx));
     r.acc += TICK;
     if (r.acc >= r.runner.period - 1e-9) {
       r.acc -= r.runner.period;

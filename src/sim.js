@@ -18,9 +18,11 @@ export const FENCE_HALF_H = 0.3;      // 半高(全高 0.6)
 
 export function fenceGeomsXml() {
   const cy = FENCE_INNER_Y + FENCE_HALF_T;
+  // contype=1 conaffinity=7: X1 等官方 MJCF 用 contype/conaffinity 位分离左右腿接触,
+  // 护栏位必须显式接受其碰撞位(1/2/4), 否则护栏对它们失效。
   return `
-    <geom name="race_fence_left" type="box" pos="${FENCE_CENTER_X} ${-cy} ${FENCE_HALF_H}" size="${FENCE_HALF_LEN} ${FENCE_HALF_T} ${FENCE_HALF_H}" condim="3" friction="0.5 0.005 0.0001"/>
-    <geom name="race_fence_right" type="box" pos="${FENCE_CENTER_X} ${cy} ${FENCE_HALF_H}" size="${FENCE_HALF_LEN} ${FENCE_HALF_T} ${FENCE_HALF_H}" condim="3" friction="0.5 0.005 0.0001"/>`;
+    <geom name="race_fence_left" type="box" pos="${FENCE_CENTER_X} ${-cy} ${FENCE_HALF_H}" size="${FENCE_HALF_LEN} ${FENCE_HALF_T} ${FENCE_HALF_H}" condim="3" friction="0.5 0.005 0.0001" contype="1" conaffinity="7"/>
+    <geom name="race_fence_right" type="box" pos="${FENCE_CENTER_X} ${cy} ${FENCE_HALF_H}" size="${FENCE_HALF_LEN} ${FENCE_HALF_T} ${FENCE_HALF_H}" condim="3" friction="0.5 0.005 0.0001" contype="1" conaffinity="7"/>`;
 }
 
 // 各物种官方 MJCF 的第一个 <worldbody> 后注入护栏(MuJoCo 对重复 section 合并, 位置无所谓)
@@ -41,10 +43,11 @@ export function buildSceneXml() {
 }
 
 // 递归内联 MJCF 的 <include file="X"/>(各文件为完整 <mujoco> 文档, 取其根内容)。
-// 嵌套 include 按所在文件目录解析(如 xml/serial_pm_v2.xml 里的 "assets.xml")。
+// 嵌套 include 按所在文件目录解析(如 xml/serial_pm_v2.xml 里的 "assets.xml");
+// file 与 = 之间允许空白(智元 X1 的官方 MJCF 为 `file = "..."` 风格)。
 function inlineMjcfIncludes(xml, files, baseDir = '', depth = 0) {
   if (depth > 6) return xml;
-  const re = /<include file="([^"]+)"\s*\/>/g;
+  const re = /<include\s+file\s*=\s*"([^"]+)"\s*\/>/g;
   return xml.replace(re, (_, f) => {
     const key = baseDir ? baseDir + '/' + f.replace(/^\.\//, '') : f;
     const raw = files.get(key);
@@ -87,7 +90,8 @@ export class Sim {
       const fl = (xml.match(/name="floor"/g) || []).length;
       if (fl > 1) console.log('DBG floors:', fl, 'include tags left:', (xml.match(/<include/g) || []).length);
       vfs.addBuffer(key, new TextEncoder().encode(xml));
-      for (const [name, bytes] of a.meshes) vfs.addBuffer('meshes/' + name, bytes);
+      // 网格 VFS 键按物种加前缀: 不同厂商的网格文件可能重名(如 pelvis.STL)
+      for (const [name, bytes] of a.meshes) vfs.addBuffer(sp.id + '_meshes/' + name, bytes);
       try {
         const m = mujocoMod.MjModel.from_xml_string(xml, vfs);
         m.opt.timestep = sp.dt; // 与官方部署一致(如 sim2sim 覆盖 timestep)
@@ -124,9 +128,15 @@ export class Sim {
       qpos[i] = (rng() * 2 - 1) * noiseScale;
     }
     // 关节初始: G1 从 mujoco 零位出生(其策略/模型顺序不同, 旧验证路径);
-    // sa01/t1 关节顺序=恒等, 直接摆到策略默认站姿再加微扰
-    const def = robot.species && robot.species.contract.defaultDof;
-    if (def) {
+    // 其他物种按契约摆到策略默认站姿再加微扰。契约给 qposIdx 时按索引摆放
+    // (X1 腿关节在 qpos 24..35, 非连续前缀), 上肢保持关节同时摆到保持目标。
+    const sp = robot.species;
+    const def = sp && sp.contract.defaultDof;
+    if (def && sp.contract.qposIdx) {
+      const idx = sp.contract.qposIdx;
+      for (let i = 0; i < def.length; i++) qpos[idx[i]] = def[i] + (rng() * 2 - 1) * noiseScale;
+      for (const h of sp.contract.holdJoints ?? []) qpos[h.qpos] = h.target + (rng() * 2 - 1) * noiseScale;
+    } else if (def) {
       for (let i = 0; i < def.length; i++) qpos[7 + i] = def[i] + (rng() * 2 - 1) * noiseScale;
     } else {
       for (let i = 7; i < model.nq; i++) qpos[i] = (rng() * 2 - 1) * noiseScale;

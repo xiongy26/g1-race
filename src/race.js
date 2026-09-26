@@ -92,7 +92,7 @@ export class Race {
         r.penalty += FALL_PENALTY;
       }
       if (r.fallen && this.raceClock - r.fallenAt >= FALL_REST) {
-        this.sim.resetRobot(r.sim, r.laneY, this.rng, 0.02, Math.max(r.x, 0));
+        this.sim.resetRobot(r.sim, r.laneY, this.rng, r.noise ?? 0.02, Math.max(r.x, 0));
         r.runner?.reset();
         r.onRestand && r.onRestand(Math.max(r.x, 0));
         r.curVx = r.targetSpeed;
