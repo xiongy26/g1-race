@@ -66,7 +66,9 @@ node server.js 8137        # 或任意静态服务器: python -m http.server 813
 
 1. 点击 **「▶ 开始比赛」**(或按空格)发枪, 3-2-1 倒计时后六台机器人起跑;
 2. 右上角实时排名, 25 米终点线冲线后弹出结算面板;
-3. 每次摔倒罚时 2 秒并在原地扶起; 所有选手完赛(或 90 秒超时)后比赛结束。
+3. 每次摔倒罚时 2 秒并在原地扶起; 所有选手完赛(或 90 秒超时)后比赛结束;
+4. 想留下影像: 点 **「● 录制 MP4」**(或按 R), 停止后自动下载 —— 3D 画面与
+   所有面板(排名/时钟/倒计时/结算)都会录进视频。
 
 ### 控制项
 
@@ -77,6 +79,7 @@ node server.js 8137        # 或任意静态服务器: python -m http.server 813
 | 目标速度 | 0.30~1.55 m/s, **按各物种包线等比缩放** |
 | 仿真倍速 | 0.5× / 1× / 2× / 3× / 4× |
 | 视角 | 跟随领跑(低机位) / 全景 / 自由(拖拽旋转、滚轮缩放) |
+| 录制 | 开始/停止一键录制, 停止自动下载; Chrome/Edge/Safari 直出 **H.264 MP4**, 其余浏览器回退 WebM |
 
 ## 技术实现
 
@@ -101,6 +104,10 @@ node server.js 8137        # 或任意静态服务器: python -m http.server 813
 │              (twist 3 + head 4 + body 6)] 61 单帧(全原始值无缩放)
 │    · 动作 -> 目标角 = a·actionScale + 默认角(各物种自己的缩放/默认站姿)
 ├─ three.js: mjv_updateScene 管线取每个 geom 世界位姿(官方 STL 网格), 赛道/拱门/阴影
+├─ 录制(src/recorder.js): 离屏合成画布每帧叠两层 —— WebGL 画布 + SVG foreignObject
+│   光栅化的面板层(内嵌页面样式表, MutationObserver 标脏 + 50ms 节流, 面板静止零开销);
+│   captureStream(60) -> MediaRecorder 编码, Chrome/Edge/Safari 直出 H.264 MP4,
+│   其余回退 WebM; 录制控件带 data-norec 不会出现在视频里
 ├─ 航向保持外环(横向 PD 级联): 车道偏差 P + 横向速度阻尼 -> 期望航向 -> 航向误差 P
 │   + 偏航阻尼 -> 各策略的 yaw 角速度指令(按物种调增益; X1 摆臂策略对 wy 极敏感,
 │   需"轻手" kpYaw=0.15+cap 0.06, 见已知要点);
@@ -222,6 +229,7 @@ g1-race/
 │   ├── policy.js         # 契约化观测构建(6 种布局)、ONNX 会话、PD/位置舵机/保持关节
 │   ├── sim.js            # MuJoCo 加载、多物种模型编译(VFS 注入+补丁)、实例管理
 │   ├── scene.js          # three.js 赛道与机器人可视化(mjv 管线)
+│   ├── recorder.js       # 比赛录制: WebGL+面板合成画布 -> MediaRecorder MP4/WebM 自动下载
 │   └── race.js           # 比赛状态机(倒计时/排名/摔倒罚时/结算)
 ├── assets/
 │   ├── g1_29dof.xml + meshes/ + policy.onnx     # Unitree G1(官方模型 + 第三方策略)

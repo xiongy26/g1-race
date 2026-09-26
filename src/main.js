@@ -12,6 +12,7 @@ import { CFG, PolicyRunner, PolicySession, steerCmd } from './policy.js';
 import { Sim, buildSceneXml, makeRng } from './sim.js';
 import { buildTrack, addLights, RobotVisual, TEAM_COLORS, laneY } from './scene.js';
 import { Race } from './race.js';
+import { RaceRecorder } from './recorder.js';
 import { SPECIES } from './robots.js';
 
 const $ = (id) => document.getElementById(id);
@@ -357,6 +358,7 @@ function renderTick() {
   app.sun.position.set(lx - 10, -8, 20);
   app.sun.target.position.set(lx, 0, 0);
   app.renderer.render(app.scene, app.camera);
+  app.recorder?.onFrame(); // 必须紧跟 render: 同一任务内 WebGL 绘图缓冲仍有效
   if (app.race.state === 'finished' && !$('results').classList.contains('show')) showResults();
 }
 
@@ -437,8 +439,10 @@ function wireUI() {
     app.paused = !app.paused;
     $('btn-pause').textContent = app.paused ? '继续' : '暂停';
   };
+  $('btn-rec').onclick = () => app.recorder.toggle();
   window.addEventListener('keydown', (e) => {
     if (e.code === 'Space') { e.preventDefault(); $('btn-start').click(); }
+    if (e.code === 'KeyR') { e.preventDefault(); app.recorder?.toggle(); }
   });
 }
 
@@ -480,6 +484,8 @@ async function main() {
     buildTrack(app.scene);
 
     app.race = new Race([], app.sim, null);
+    app.recorder = new RaceRecorder({ getSceneCanvas: () => app.renderer.domElement });
+    window.__recorder = app.recorder;
     buildRobots(app.robotCount);
     wireUI();
 

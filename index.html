@@ -44,6 +44,13 @@
   #clock { font-size: 20px; font-weight: 700; color: #eef2f8; font-variant-numeric: tabular-nums; }
   #rt { font-size: 10px; color: var(--dim); }
 
+  #rec { display: none; align-items: center; gap: 6px; font-size: 11px; color: var(--red);
+         letter-spacing: 0.12em; font-variant-numeric: tabular-nums; }
+  #rec.show { display: flex; }
+  #rec i { width: 9px; height: 9px; border-radius: 50%; background: var(--red); animation: recblink 1.1s infinite; }
+  #rec b { font-weight: 700; color: #ff7b7b; }
+  @keyframes recblink { 50% { opacity: 0.2; } }
+
   #board { top: 84px; right: 14px; width: 300px; padding: 12px 14px; }
   #board h2 { font-size: 10px; letter-spacing: 0.24em; color: var(--dim); font-weight: 400; margin-bottom: 10px; }
   .row { display: grid; grid-template-columns: 12px minmax(44px, auto) 1fr auto; gap: 8px; align-items: center;
@@ -72,6 +79,16 @@
   button.active { border-color: var(--amber); color: var(--amber); background: rgba(255, 176, 0, 0.08); }
   button.primary { background: var(--amber); color: #14100a; border-color: var(--amber); font-weight: 700; }
   button.primary:hover { filter: brightness(1.1); color: #14100a; }
+  #btn-rec.rec { border-color: var(--red); color: var(--red); background: rgba(255, 69, 69, 0.10); }
+  #btn-rec.rec:hover { border-color: var(--red); color: var(--red); }
+
+  #rec-toast { position: fixed; top: 58px; left: 50%; transform: translate(-50%, -6px);
+    background: var(--panel); border: 1px solid var(--line-bright); color: var(--text);
+    padding: 8px 16px; border-radius: 8px; font-size: 12px; z-index: 40; opacity: 0;
+    transition: opacity 0.25s, transform 0.25s; pointer-events: none; max-width: 72vw;
+    backdrop-filter: blur(8px); }
+  #rec-toast.show { opacity: 1; transform: translate(-50%, 0); }
+  #rec-toast.err { border-color: var(--red); color: var(--red); }
   .seg { display: flex; gap: 5px; }
   input[type="range"] { -webkit-appearance: none; appearance: none; width: 120px; height: 3px;
     background: var(--line-bright); outline: none; border-radius: 2px; cursor: pointer; }
@@ -152,6 +169,7 @@
     <span id="status" class="pill warn">加载中</span>
     <div id="rt" style="margin-top:3px">RTF -</div>
   </div>
+  <span id="rec" data-norec><i></i>REC <b id="rec-t">00:00</b></span>
   <span id="clock">00.0s</span>
 </div>
 
@@ -211,11 +229,15 @@
       <button data-m="free">自由</button>
     </div>
   </div>
+  <div class="cell">
+    <span class="lbl">录制</span>
+    <button id="btn-rec">● 录制 MP4</button>
+  </div>
 </div>
 
 <div id="hint">
   <b>25m</b> 跑道 · 每次摔倒罚时 <b>2s</b> · 空格键重新发枪<br>
-  「自由」视角下可拖拽旋转 / 滚轮缩放
+  <b>R</b> 键开始/停止录制(含面板, 停止自动下载) · 「自由」视角下可拖拽旋转 / 滚轮缩放
 </div>
 
 <div id="results">
