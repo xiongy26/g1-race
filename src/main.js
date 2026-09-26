@@ -100,7 +100,7 @@ async function loadSpeciesPolicies() {
 
 // ---------- 阵容 ----------
 function pickLineup(i, rng) {
-  const pool = SPECIES.filter((s) => app.sessionBySpecies.has(s.id));
+  const pool = SPECIES.filter((s) => app.sessionBySpecies.has(s.id) && app.sim.hasModel(s.id));
   if (app.lineup === 'g1') return G1_SPEC;
   if (app.lineup === 'random') return pool[Math.floor(rng() * pool.length) % pool.length];
   return pool[i % pool.length];

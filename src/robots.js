@@ -16,11 +16,13 @@ import { makeSteer } from './policy.js';
 //        sim2sim.py, BSD-3-Clause; walk.pt 已转 ONNX, 数值误差 <1.1e-6)
 //   X1   智元灵犀 X1: AgibotTech/agibot_x1_infer(官方 serial MJCF+STL+
 //        rl_walk_leg.onnx+rl_x1_sim.yaml 部署契约, 同仓库 agibot_x1_train 为训练代码)
-// 落选记录: 优必选 Walker S2(无公开模型+策略对)、MicroDuck(官方模型在
-//   pollen-robotics/microduck_rl 齐备, 但官方策略权重只发布在 HuggingFace
-//   microduck-policies, 本环境网络不可达且 wandb 训练项目私有 → 资产到手即可按
-//   本仓库流程接入)、傅里叶 GR-1/N1(有模型有权重但 obs 契约锁在闭源 SDK/
-//   多层配置里无法对齐, 硬接必摔)。
+//   DUCK MicroDuck: pollen-robotics/microduck_rl(官方 scene_allcollisions+
+//        robot_allcollisions MJCF+43 STL, Apache-2.0) + HuggingFace
+//        pollen-robotics/microduck-policies 官方 velstand.onnx(官方默认行走策略,
+//        行走+零指令站立一体, 61 维观测/14 动作/50Hz, manifest.json 契约)
+// 落选记录: 优必选 Walker S2(无公开模型+策略对)、傅里叶 GR-1/N1(有模型有权重但
+//   obs 契约锁在闭源 SDK/多层配置里无法对齐, 硬接必摔)。
+//   (MicroDuck 曾因 HuggingFace 直连不可达落选, 后经 hf-mirror 镜像取回权重转正。)
 
 // ---------- G1 契约(unitree_rl_gym 布局, 见 policy.js) ----------
 export const G1_CONTRACT = {
@@ -204,6 +206,32 @@ for (const j of ['left_wrist_pitch', 'left_wrist_roll', 'right_wrist_pitch', 'ri
 }
 
 
+// ---------- Pollen MicroDuck 契约(microduck_rl scripts/infer_policy.py --no-bam + HF manifest.json 逐条对齐) ----------
+// 官方资产: microduck_rl 官方 scene_allcollisions.xml + robot_allcollisions.xml
+// (VelStand 任务的训练模型, 70 碰撞 geom 全量导出) + 43 STL, Apache-2.0;
+// 策略为 HuggingFace pollen-robotics/microduck-policies 官方 velstand.onnx
+// (manifest: "the default walk policy since v5", 行走+零指令站立一体, 免站立切换)。
+// obs(61) 单帧 = [机体角速度(3), 重力投影(3), 关节位置-默认(14), 关节速度(14),
+//            上次动作(14), 指令(13): twist(3) + head_pose(4) + body_pose(6)],
+//            全部原始值无缩放无裁剪; 关节顺序 = 执行器顺序(恒等映射, qpos 7..20)。
+// 动作 14 -> 目标角 = a·1.0 + 默认角(STAND2 站姿, 与 ONNX 元数据 default_joint_pos 一致),
+// ctrl 直接写目标角(官方 position 舵机 kp=0.55/forcerange ±0.96 = BAM XL330 执行器在
+// vin 7.4V/kp_fw 200 下的官方 to_mujoco 等效参数, 由 bam 包数值验证)。
+// PD@200Hz(位置舵机随物理步), 策略@50Hz(decim 4 × dt 0.005, 官方 manifest control_hz=50)。
+// 训练指令范围 vx ±0.4 / vy ±0.3 / wy ±1.0(velocity 配置; 开环实测指令跟踪 ~40-50%,
+// 站立高 ~0.12m, 零指令自站稳, 固有左偏航漂移 ~0.1 rad/s 由外环修正)。
+export const DUCK_CONTRACT = {
+  layout: 'duck',
+  numActions: 14,
+  numObs: 61,
+  inputLen: 61,
+  stack: 1,
+  stackMode: 'none',
+  actionScale: 1.0,
+  defaultDof: [0, -0.0873, -0.4579, -0.0049, 0.4530, 0.3491, 0.3491, 0, 0, 0, 0.0873, 0.4579, 0.0049, -0.4530],
+  actuatorMode: 'position',
+};
+
 // ---------- 物种注册表 ----------
 export const SPECIES = [
   {
@@ -326,6 +354,31 @@ export const SPECIES = [
     wrapScene: false,
     // 官方 compiler meshdir + 手腕 4 关节 armature 数值稳定补丁(见 X1_CONTRACT 注)
     xmlPatches: x1Patches,
+  },
+  {
+    id: 'duck',
+    name: 'Pollen MicroDuck',
+    short: 'MicroDuck',
+    emoji: '🦆',
+    xmlFile: './assets/duck/scene_allcollisions.xml',
+    extraFiles: ['robot_allcollisions.xml'],
+    policyFile: './assets/duck/policy.onnx',
+    contract: DUCK_CONTRACT,
+    dt: 0.005,
+    decim: 4,
+    zHome: 0.125,
+    fallZ: 0.08,
+    labelH: 0.42,
+    visGroups: [2],
+    // 训练指令范围 vx ±0.4, 策略只跟踪 ~40-50%(0.8 指令实跑 ~0.41, 0.95 指令
+    // 8 种子全不摔)。maxV=0.9: 比赛 ±6% 抖动后最坏 0.954, 实跑 ~0.40,
+    // 25m 约 62s(90s 超时内)。
+    maxV: 0.9,
+    noise: 0.005,
+    // 默认外环增益即可贴道(3 车道最大偏差 0.20~0.25m); 策略固有左偏漂移由外环修正
+    wrapScene: false,
+    // 官方 compiler meshdir="assets"(网格在 assets/ 子目录) -> VFS 专属前缀
+    xmlPatches: [{ from: 'meshdir="assets"', to: 'meshdir="duck_meshes"' }],
   },
 ];
 

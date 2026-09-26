@@ -1,5 +1,6 @@
 #!/bin/bash
 # 一次性资产下载: 天工 Tienkung2-Lite(TienKung-Lab) + 智元灵犀X1(agibot_x1_infer)
+#                 + Pollen MicroDuck(microduck_rl + HuggingFace microduck-policies)
 set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 RAW="https://raw.githubusercontent.com"
@@ -34,3 +35,20 @@ for m in $X1_MESHES; do
 done
 curl -sf --retry 3 "$RAW/AgibotTech/agibot_x1_infer/main/src/module/control_module/policy/rl_walk_leg.onnx" -o "$ROOT/assets/x1/policy.onnx"
 echo "x1 done: $(du -sh "$ROOT/assets/x1" | cut -f1)"
+
+# ---------- Pollen MicroDuck ----------
+# 官方 MJCF+网格来自 microduck_rl(VelStand 任务的训练模型 scene_allcollisions);
+# 官方策略 velstand.onnx 发布在 HuggingFace(直连不可达时用 hf-mirror 镜像)。
+# 注意: 本仓库对 12 个 1MB 上限的大网格做了 4000 三角面抽稀以适配 MuJoCo WASM
+# 2GB 堆(见 README「已知实现要点」), 此处下载的是官方原版网格。
+DUCK_BASE="$RAW/pollen-robotics/microduck_rl/main/src/mjlab_microduck/robot/microduck"
+HF_BASE="${HF_BASE:-https://hf-mirror.com/pollen-robotics/microduck-policies/resolve/main}"
+mkdir -p "$ROOT/assets/duck/meshes"
+curl -sf --retry 3 "$DUCK_BASE/scene_allcollisions.xml" -o "$ROOT/assets/duck/scene_allcollisions.xml"
+curl -sf --retry 3 "$DUCK_BASE/robot_allcollisions.xml" -o "$ROOT/assets/duck/robot_allcollisions.xml"
+# 网格清单直接从 robot_allcollisions.xml 提取(与运行时同一正则口径)
+for m in $(grep -o 'mesh file="[^"]*\.stl"' "$ROOT/assets/duck/robot_allcollisions.xml" | sed 's/mesh file="//;s/"//' | sort -u); do
+  test -s "$ROOT/assets/duck/meshes/$m" || curl -sf --retry 3 "$DUCK_BASE/assets/$m" -o "$ROOT/assets/duck/meshes/$m"
+done
+curl -sfL --retry 3 "$HF_BASE/velstand.onnx" -o "$ROOT/assets/duck/policy.onnx"
+echo "duck done: $(du -sh "$ROOT/assets/duck" | cut -f1)"

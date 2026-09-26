@@ -104,9 +104,18 @@ export class Sim {
     return sim;
   }
 
+  // 物种模型编译失败(如 WASM 内存耗尽)时绝不能静默回退成 G1 模型——
+  // 那会让该物种拿着自己的契约驱动 G1 的执行器, 行为完全失控(踩过)。
+  hasModel(id) {
+    if (id === 'g1') return true;
+    return this.speciesModels.has(id);
+  }
+
   modelFor(species) {
     if (!species || species.id === 'g1') return this.model;
-    return this.speciesModels.get(species.id) ?? this.model;
+    const m = this.speciesModels.get(species.id);
+    if (!m) throw new Error(`物种 ${species.id} 的 MjModel 未编译成功(见 Sim.load 日志)`);
+    return m;
   }
 
   addRobot(species = null) {

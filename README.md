@@ -1,6 +1,6 @@
 # 🏃 双足短跑大赛(Bipedal Sprint Race)
 
-在浏览器里让 **5 种真实双足机器人**同场进行 25 米短跑比赛:
+在浏览器里让 **6 种真实双足机器人**同场进行 25 米短跑比赛:
 
 | 物种 | 速度包线 | 模型来源 | 策略来源 |
 |---|---|---|---|
@@ -9,13 +9,14 @@
 | 🦿 Booster T1(12 DoF) | 1.20 m/s | [booster_gym](https://github.com/BoosterRobotics/booster_gym) 官方 MJCF+网格 | 同仓库官方 `T1.pt`(已转 ONNX) |
 | 🧑‍🚀 天工 Tienkung2-Lite(20 DoF) | 1.00 m/s | [TienKung-Lab](https://github.com/Open-X-Humanoid/TienKung-Lab) 官方 MJCF+网格(BSD-3) | 同仓库官方 `Exported_policy/walk.pt`(TorchScript, 已转 ONNX) |
 | 🧍 智元灵犀 X1(12+17 DoF) | 0.85 m/s | [agibot_x1_infer](https://github.com/AgibotTech/agibot_x1_infer) 官方 serial MJCF+网格 | 同仓库官方 `rl_walk_leg.onnx` + `rl_x1_sim.yaml` 部署契约 |
+| 🦆 Pollen MicroDuck(14 DoF) | 0.90 m/s | [microduck_rl](https://github.com/pollen-robotics/microduck_rl) 官方 MJCF+网格(Apache-2.0) | HuggingFace [microduck-policies](https://huggingface.co/pollen-robotics/microduck-policies) 官方 `velstand.onnx` |
 
 **收录标准:官方机器人模型文件 + 官方策略模型,两者齐备才收录;缺一不加。**
 每一台都由自己的神经网络策略(ONNX @ onnxruntime-web)在 50/100Hz 闭环控制,
 全部自由物理(无任何骨盆/轨道辅助)。物理由 **MuJoCo 3.14 WebAssembly** 求解,
 three.js 渲染,纯前端本地运行。
 
-### 调研记录(2026-09,为什么是这五台)
+### 调研记录(2026-09,为什么是这六台)
 
 - ✅ **众擎 PM01**:`engineai_rl_lab` 同时提供官方 MJCF、STL 网格与训练导出的
   AMP 速度策略 ONNX + `params/env.yaml`(观测契约逐条可对齐, 训练指令范围
@@ -30,12 +31,15 @@ three.js 渲染,纯前端本地运行。
   (`model/mjcf/robot/xyber_x1/xyber_x1_serial.xml`)+ 网格 + 官方行走策略
   `rl_walk_leg.onnx` + 部署配置 `rl_x1_sim.yaml`(47 维观测×66 帧历史、指令缩放、
   PD/LPF/步态门控全部明文);`agibot_x1_train` 为同源训练代码。
+- ✅ **Pollen MicroDuck**(HuggingFace):`microduck_rl` 提供官方 MJCF
+  (`scene_allcollisions.xml`+`robot_allcollisions.xml`, VelStand 任务训练模型)+43 STL
+  (Apache-2.0);官方策略发布在 HuggingFace Hub `pollen-robotics/microduck-policies`
+  (Apache-2.0),取 v5 起的默认行走策略 `velstand.onnx`(行走+零指令站立一体,
+  61 维观测/14 动作/50Hz, `manifest.json` 契约明文; 曾因 HF 直连不可达落选,
+  后经 hf-mirror 镜像取回转正; ONNX 元数据自带 joint_names/default_joint_pos/
+  action_scale, 与 `infer_policy.py` 逐条对齐)。
 - ❌ **智元 A2**:官方只放了 X2 的 URDF,无 A2 模型;无任何公开 A2 运动策略 → 不加。
 - ❌ **优必选 Walker S2**:无公开的模型+策略对 → 不加。
-- ❌ **MicroDuck**(Pollen Robotics/HuggingFace):官方模型(`microduck_rl` 的
-  `robot_walk.xml`+网格+61 维观测契约)齐备,但**官方策略权重只发布在 HuggingFace Hub**
-  (`pollen-robotics/microduck-policies`),本环境网络不可达(直连/mirror/代理均失败),
-  wandb 训练项目私有 → 权重到手即可按本仓库流程接入,暂不加。
 - ❌ **傅里叶 GR-1/N1**:模型(Wiki-GRx-Models/Menagerie)与权重(Wiki-GRx-Deploy 的
   jit 策略)都有,但策略输入契约锁在闭源 SDK(actor+encoder 双网络)或多层配置里,
   无法可靠对齐 → 暂不加,契约公开后即可按本仓库的物种接入流程补上。
@@ -49,7 +53,7 @@ node server.js 8137        # 或任意静态服务器: python -m http.server 813
 ```
 
 > 必须通过 HTTP 访问(ES Module 与 WASM 跨域限制)。首次打开需编译 MuJoCo WASM
-> 与加载五套模型资产(智元 X1 网格约 37MB),耐心等几秒。
+> 与加载六套模型资产(智元 X1 网格约 37MB),耐心等几秒。
 
 ## 玩法
 
@@ -62,7 +66,7 @@ node server.js 8137        # 或任意静态服务器: python -m http.server 813
 | 控件 | 说明 |
 |---|---|
 | 机器人数 | 2~6 台同场竞技(默认 6) |
-| 阵容 | 五强混战(默认) / 全 G1 / 随机 |
+| 阵容 | 六强混战(默认) / 全 G1 / 随机 |
 | 目标速度 | 0.30~1.55 m/s, **按各物种包线等比缩放** |
 | 仿真倍速 | 0.5× / 1× / 2× / 3× / 4× |
 | 视角 | 跟随领跑(低机位) / 全景 / 自由(拖拽旋转、滚轮缩放) |
@@ -74,9 +78,9 @@ node server.js 8137        # 或任意静态服务器: python -m http.server 813
 ├─ MuJoCo 3.14 WASM(@mujoco/mujoco 官方绑定)
 │    · 每物种一份 MjModel(官方 MJCF 原版 + 最小运行时补丁), 每台机器人独立 MjData
 │    · 关节空间 PD/位置舵机控制(各物种自己的 kp/kd/力矩限幅/步长: G1/T1/X1 500Hz,
-│      SA01 1kHz, 天工 200Hz)
+│      SA01 1kHz, 天工/MicroDuck 200Hz)
 ├─ ONNX Runtime Web(WASM 后端, 单线程)
-│    · 每物种独立策略 @ 各自频率(G1/T1/天工 50Hz, PM01/X1 100Hz), 观测契约逐条对齐
+│    · 每物种独立策略 @ 各自频率(G1/T1/天工/MicroDuck 50Hz, PM01/X1 100Hz), 观测契约逐条对齐
 │      官方部署代码:
 │      G1  : unitree_rl_gym 布局, 96×5 组优先堆叠 = 480
 │      SA01: [相位, 指令×2, 关节, 关节速度, 上次动作, 角速度, 欧拉角] 47×15 帧优先 = 705
@@ -85,6 +89,8 @@ node server.js 8137        # 或任意静态服务器: python -m http.server 813
 │              摆空相比例] 75×10 帧优先 = 750(全原始值无缩放)
 │      X1  : [sin/cos(2πφ), 指令×2 缩放, wy, 关节, 关节速度, 上次动作, 角速度, 欧拉角]
 │              47×66 帧优先 = 3102(首帧整段填充, |指令|≤0.05 步态相位清零)
+│      MicroDuck: [角速度, 重力投影, 关节, 关节速度, 上次动作, 指令 13 维
+│              (twist 3 + head 4 + body 6)] 61 单帧(全原始值无缩放)
 │    · 动作 -> 目标角 = a·actionScale + 默认角(各物种自己的缩放/默认站姿)
 ├─ three.js: mjv_updateScene 管线取每个 geom 世界位姿(官方 STL 网格), 赛道/拱门/阴影
 ├─ 航向保持外环(横向 PD 级联): 车道偏差 P + 横向速度阻尼 -> 期望航向 -> 航向误差 P
@@ -120,6 +126,23 @@ node server.js 8137        # 或任意静态服务器: python -m http.server 813
 - **X1 的腕部 armature 补丁**:官方 MJCF 无 armature(1kHz 隐式积分稳定), 本仓库
   500Hz 显式 PD 对 5.7e-7 量级腕部惯量数值发散, 给 4 个腕关节加
   `armature="0.002"`(电机转子经减速器的等效惯量, 量级合理, 不改变步行物理)。
+- **MicroDuck 的"BAM 等效"位置舵机**:官方策略按 Rhoban BAM(Better Actuator Models)
+  XL330 电压舵机模型训练(vin 7.4V / firmware kp 200, 电压钳位+反电动势+负载相关摩擦),
+  本仓库沿用官方 `infer_policy.py --no-bam` 部署回退——直接用官方 MJCF 的 position
+  舵机(kp=0.55 / forcerange ±0.96 / 关节阻尼 0.053 / armature 0.0018), 该参数恰为
+  BAM `to_mujoco` 在标称电压下的官方等效(用 bam 包 m6 参数 kt=0.366, R=2.81 数值验证:
+  kt·vin·e·kp/R=0.5547, vin·kt/R=0.963)。Python 侧状态注入对比确认 obs 与官方逐位一致
+  (误差 ~1e-9), 开环轨迹与官方脚本一致。
+- **MicroDuck 行为特征**:velstand 策略零指令自站稳(倒计时免站立网络)、指令跟踪
+  ~40-50%(0.8 指令实跑 ~0.41 m/s), 训练范围 vx ±0.4 / wy ±1.0; 固有左偏航漂移
+  (~-0.1 rad/s)由外环修正(默认增益即可, 3 车道最大偏差 0.20~0.25m); 起步慢热
+  (~2s 内加速), maxV=0.9 时比赛 ±6% 抖动最坏 0.954 指令 8 种子全不摔。
+- **MicroDuck 网格瘦身(WASM 2GB 上限)**:官方 43 STL 共 471k 三角面(24MB), 六物种
+  同场编译时 MuJoCo WASM 堆顶到 2GB 上限, 鸭子模型 `Could not allocate memory`
+  编译失败被静默回退成 G1 模型(无头测试里表现为"鸭子摔得诡异")。把 12 个 1MB 上限
+  大网格抽稀到 4000 三角面(凸包几乎不变, 比赛相机距离无视觉差), 总量降到 272k 面
+  /15MB 后六模型编译稳定。同时 `Sim.modelFor` 对编译失败的物种改为显式抛错、
+  阵容池按"策略+模型双就绪"过滤(此前会静默回退成 G1 模型, 行为完全失控)。
 - **跨物种网格重名**: 不同厂商 MJCF 网格可能重名(如 G1 与天工都有 `pelvis.STL`),
   VFS 键按物种加前缀(`<id>_meshes/...`), MJCF 的 meshdir 由 xmlPatches 重写。
 - **护栏 contype/conaffinity**: X1 用碰撞位分离左右腿(脚 contype 2/4), 护栏必须
@@ -137,7 +160,7 @@ node server.js 8137        # 或任意静态服务器: python -m http.server 813
      T1/X1 策略的 yaw 跟踪迟缓/漂移, 需按物种调低/调高航向增益(`species.steer`,
      见 `makeSteer`; X1 默认增益 10 种子中 1 摔, kpYaw=3.0 后 20 种子全净)。
      修复后各物种 25m 最大横向偏差: G1 ≤0.14m / PM01 ≤0.15m / T1 ≤0.42m /
-     天工 ≤0.09m / X1 ≤0.16m。
+     天工 ≤0.09m / X1 ≤0.16m / MicroDuck ≤0.25m(默认增益)。
   2. **物理护栏兜底**: 每个物种的 MJCF 在编译前注入赛道两侧挡墙(`sim.js`
      `fenceGeomsXml`, 内侧面 y=±4.20), 视觉上对应红白路缘。正常贴道跑永不接触;
      摔倒/打滑/极端漂移时被挡在跑道内。无头测试用"关闭外环的 G1"(固有弧线偏置)
@@ -152,9 +175,9 @@ node server.js 8137        # 或任意静态服务器: python -m http.server 813
 ## 回归测试
 
 ```bash
-node test-gaits.mjs         # 每物种 0.85×包线 25m 单测 + 五物种混合比赛(全自由物理)
+node test-gaits.mjs         # 每物种 0.85×包线 25m 单测 + 六物种混合比赛(全自由物理)
 node test-straightline.mjs  # G1 六道六速直线跑回归(含 1.55 极限速度)
-node test-lanekeep.mjs      # 赛道保持回归: 五物种贴道跑 + 物理护栏兜底 + 混合比赛
+node test-lanekeep.mjs      # 赛道保持回归: 六物种贴道跑 + 物理护栏兜底 + 混合比赛
 node test-speed-sweep.mjs   # G1 速度包线扫描
 ```
 
@@ -164,7 +187,7 @@ node test-speed-sweep.mjs   # G1 速度包线扫描
 g1-race/
 ├── index.html            # UI / importmap / 启动遮罩 / 阵容选择
 ├── server.js             # 极简静态服务器(node server.js [port])
-├── test-gaits.mjs        # 无头回归: 五物种 25m 单测 + 混合比赛
+├── test-gaits.mjs        # 无头回归: 六物种 25m 单测 + 混合比赛
 ├── test-straightline.mjs # G1 直线跑回归
 ├── test-lanekeep.mjs     # 赛道保持回归: 贴道跑 + 护栏兜底 + 混合比赛
 ├── RETRAIN.md            # 提速重训指南 + 新物种接入流程
@@ -174,7 +197,7 @@ g1-race/
 ├── src/
 │   ├── main.js           # 启动、多物种调度(各策略周期)、阵容、相机、HUD
 │   ├── robots.js         # 🧬 物种注册表: 模型/策略来源 + 观测/PD 契约 + 调研记录
-│   ├── policy.js         # 契约化观测构建(5 种布局)、ONNX 会话、PD/位置舵机/保持关节
+│   ├── policy.js         # 契约化观测构建(6 种布局)、ONNX 会话、PD/位置舵机/保持关节
 │   ├── sim.js            # MuJoCo 加载、多物种模型编译(VFS 注入+补丁)、实例管理
 │   ├── scene.js          # three.js 赛道与机器人可视化(mjv 管线)
 │   └── race.js           # 比赛状态机(倒计时/排名/摔倒罚时/结算)
@@ -183,7 +206,10 @@ g1-race/
 │   ├── pm01/pm_v2.xml + meshes/ + policy.onnx    # 众擎 PM01(官方模型 + 官方策略)
 │   ├── t1/T1_locomotion.xml + meshes/ + policy.onnx # Booster T1(官方模型, 权重已转 ONNX)
 │   ├── tk/tienkung.xml + meshes/ + policy.onnx  # 天工 Tienkung2-Lite(官方模型, walk.pt 已转 ONNX)
-│   └── x1/xyber_x1_flat.xml + meshes/ + policy.onnx # 智元灵犀 X1(官方模型 + 官方 ONNX)
+│   ├── x1/xyber_x1_flat.xml + meshes/ + policy.onnx # 智元灵犀 X1(官方模型 + 官方 ONNX)
+│   └── duck/scene_allcollisions.xml + robot_allcollisions.xml + meshes/ + policy.onnx
+│                                  # Pollen MicroDuck(官方模型 + 官方 velstand.onnx; 12 个大网格
+│                                  #   已从 1MB 上限抽稀到 4000 三角面以适配 WASM 2GB 堆)
 └── vendor/               # 本地化的 mujoco-wasm / three / onnxruntime-web
 ```
 
@@ -204,6 +230,9 @@ g1-race/
 - 天工 Tienkung2-Lite:[Open-X-Humanoid/TienKung-Lab](https://github.com/Open-X-Humanoid/TienKung-Lab)(BSD-3-Clause)
 - 智元灵犀 X1:[AgibotTech/agibot_x1_infer](https://github.com/AgibotTech/agibot_x1_infer) /
   [AgibotTech/agibot_x1_train](https://github.com/AgibotTech/agibot_x1_train)
+- Pollen MicroDuck:模型 [pollen-robotics/microduck_rl](https://github.com/pollen-robotics/microduck_rl) /
+  策略 [pollen-robotics/microduck-policies](https://huggingface.co/pollen-robotics/microduck-policies)(均 Apache-2.0;
+  执行器等效性验证用 [Rhoban/bam](https://github.com/Rhoban/bam) 的 XL330 m6 模型参数)
 - 物理引擎:[MuJoCo](https://mujoco.readthedocs.io)(Apache-2.0)
 - 推理引擎:[onnxruntime-web](https://github.com/microsoft/onnxruntime)(MIT)
 - 渲染:[three.js](https://threejs.org)(MIT)

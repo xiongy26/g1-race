@@ -3,6 +3,8 @@
 #   X1 (智元灵犀X1): 12腿PD+上肢保持, 47obsx66帧@100Hz, 动作LPF
 # 跑 12m 直线, 验证契约方向正确性(不追求完美调参)
 import os
+import re
+
 import numpy as np
 import mujoco
 import onnxruntime as ort
@@ -203,9 +205,79 @@ def run_x1(seconds=14.0, vx=0.5):
     return d.qpos[0] > 6.0
 
 
+def run_duck(seconds=8.0, vx=0.8):
+    # MicroDuck(Pollen Robotics): velstand.onnx 官方默认行走策略(行走+零指令站立一体),
+    # 官方 infer_policy.py --no-bam 契约逐条对齐:
+    #   模型  scene_allcollisions.xml + robot_allcollisions.xml(官方 VelStand 训练模型)
+    #   执行器 官方 MJCF position 舵机原样(kp=0.55 kv=0 forcerange ±0.96, 关节阻尼 0.053)
+    #   obs(61) 单帧 = [机体角速度(3), 重力投影(3), 关节位置-默认(14), 关节速度(14),
+    #            上次动作(14), 指令(13): [vx,vy,wy + head(4) + body(6) 置零]]
+    #   动作 14 -> 目标角 = a·1.0 + 默认角, ctrl 直接写目标角
+    #   dt 0.005 × decim 4 = 50Hz; 初始 trunk z=0.125 + 默认站姿(官方 main)
+    #   训练指令范围 vx ±0.4 / vy ±0.3 / wy ±1.0(velocity 配置)
+    base = os.path.join(ROOT, "assets/duck")
+    scene = open(os.path.join(base, "scene_allcollisions.xml"), encoding="utf-8").read()
+    robot = open(os.path.join(base, "robot_allcollisions.xml"), encoding="utf-8").read()
+
+    def body_of(t):
+        t = re.sub(r"^[\s\S]*?<mujoco[^>]*>", "", t)
+        return re.sub(r"</mujoco>\s*$", "", t)
+    scene = scene.replace('<include file="robot_allcollisions.xml" />', body_of(robot))
+    scene = scene.replace('meshdir="assets"', 'meshdir="assets/duck/meshes"')
+    m = mujoco.MjModel.from_xml_string(scene)
+    m.opt.timestep = 0.005
+    d = mujoco.MjData(m)
+
+    default_dof = np.array([0.0, -0.0873, -0.4579, -0.0049, 0.4530,
+                            0.3491, 0.3491, 0.0, 0.0,
+                            0.0, 0.0873, 0.4579, 0.0049, -0.4530], np.float32)
+    sess = ort.InferenceSession(os.path.join(base, "policy.onnx"),
+                                providers=["CPUExecutionProvider"])
+    DEC = 4
+    action = np.zeros(14, np.float32)
+    d.qpos[2] = 0.125
+    d.qpos[7:21] = default_dof
+    d.ctrl[:] = default_dof  # 官方: set_position_targets(default_pose) 后 mj_forward
+    mujoco.mj_forward(m, d)
+    sim_t = 0.0
+    stand_steps = int(1.5 / (0.005 * DEC))
+    nsteps = stand_steps + int(seconds / (0.005 * DEC))
+    x_start = None
+    for st in range(nsteps):
+        if st == stand_steps:
+            cmd = np.array([vx, 0, 0] + [0] * 10, np.float32)
+            x_start = d.qpos[0]
+        elif st == 0:
+            cmd = np.zeros(13, np.float32)
+        obs = np.concatenate([
+            d.qvel[3:6] * 1.0,                        # 机体系角速度(原始)
+            gravity_orientation(d.qpos[3:7]),         # 重力投影
+            d.qpos[7:21] - default_dof,
+            d.qvel[6:20] * 1.0,
+            action,
+            cmd,
+        ]).astype(np.float32)
+        action = sess.run(None, {"obs": obs[None]})[0][0].astype(np.float32)
+        target = action * 1.0 + default_dof
+        for _ in range(DEC):
+            d.ctrl[:] = target
+            mujoco.mj_step(m, d)
+            sim_t += 0.005
+        if st % 50 == 0:
+            v = 0.0 if x_start is None or sim_t <= 1.5 else (d.qpos[0] - x_start) / (sim_t - 1.5)
+            print(f"[DUCK] t={sim_t:5.1f}s x={d.qpos[0]:6.2f} z={d.qpos[2]:.3f}"
+                  f" yaw={quat_to_rpy(d.qpos[3:7])[2]:5.2f} v_avg={v:.2f}")
+        if d.qpos[2] < 0.06:
+            print(f"[DUCK] FELL at t={sim_t:.1f}s x={d.qpos[0]:.2f}")
+            return False
+    v = (d.qpos[0] - x_start) / (sim_t - 1.5)
+    print(f"[DUCK] OK: 指令 vx={vx}, 实测均速 {v:.2f} m/s, 终点 x={d.qpos[0]:.2f}")
+    return v > 0.15
+
+
 if __name__ == "__main__":
     import sys
     which = sys.argv[1] if len(sys.argv) > 1 else "tk"
     vx = float(sys.argv[2]) if len(sys.argv) > 2 else None
-    ok = run_tk(vx=vx) if which == "tk" else run_x1(vx=vx)
+    ok = {"tk": run_tk, "x1": run_x1, "duck": run_duck}[which](vx=vx)
     print("PASS" if ok else "FAIL")

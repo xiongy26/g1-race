@@ -22,6 +22,11 @@
 //          |指令|≤0.05 时步态相位清零(sw_mode), 策略周期 10ms。
 //          策略只控 12 腿关节(contract.ctrlIdx/qposIdx 定位), 上肢由 holdJoints
 //          按官方 pd_zero/pd_stand 组合增益保持; 目标角经一阶 LPF(lpfAlpha=wc·dt)。
+//  · 'duck'(Pollen microduck_rl infer_policy.py --no-bam 逐条对齐):
+//          obs(61) = [机体角速度(3), 重力投影(3), 关节位置-默认(14), 关节速度(14),
+//          上次动作(14), 指令(13): twist 3 + head_pose 4 + body_pose 6(比赛置零)],
+//          单帧, 全部原始值无缩放无裁剪, 策略周期 20ms。关节顺序 = 执行器顺序
+//          (恒等映射); 执行器为官方 MJCF position 舵机(actuatorMode='position')。
 // 输出动作 -> 目标角 = a·actionScale + 默认角; 关节空间 PD(带力矩限幅)。
 // 比赛直道保持: 上层横向 PD 级联外环把车道偏差转成 cmd[2], 见 STEER。
 
@@ -186,6 +191,8 @@ export class PolicyRunner {
     } else if (c.layout === 'x1') {
       this.obsTime += dtStep;
       single = this._obsX1(qpos, qvel, cmd);
+    } else if (c.layout === 'duck') {
+      single = this._obsDuck(qpos, qvel, cmd);
     } else {
       this.obsTime += dtStep;
       single = this._obsT1(qpos, qvel, cmd, dtStep);
@@ -337,6 +344,26 @@ export class PolicyRunner {
     const rpy = quatToRpy(qpos[3], qpos[4], qpos[5], qpos[6]);
     for (let i = 0; i < 3; i++) s[8 + 3 * NA + i] = rpy[i];
     for (let i = 0; i < c.numSingleObs; i++) s[i] = clamp(s[i], -c.clipObs, c.clipObs);
+    return s;
+  }
+
+  // MicroDuck(Pollen microduck_rl scripts/infer_policy.py get_observations 逐条对齐,
+  // --no-bam 模式): 全部原始值无缩放; 指令 13 维 = [vx, vy, wy, head_pose×4, body_pose×6],
+  // 比赛只用 twist 前三维(头/躯干位姿槽保持 0)。单帧无堆叠, 无 obs 裁剪。
+  _obsDuck(qpos, qvel, cmd) {
+    const c = this.c;
+    const s = new Float32Array(c.numObs);
+    const NA = c.numActions;
+    for (let i = 0; i < 3; i++) s[i] = qvel[3 + i];
+    const g = gravityOrientation(qpos[3], qpos[4], qpos[5], qpos[6]);
+    for (let i = 0; i < 3; i++) s[3 + i] = g[i];
+    for (let i = 0; i < NA; i++) {
+      s[6 + i] = qpos[7 + i] - this.defaultMjc[i];
+      s[6 + NA + i] = qvel[6 + i];
+      s[6 + 2 * NA + i] = this.action[i];
+    }
+    const cmdBase = 6 + 3 * NA;
+    for (let i = 0; i < 3; i++) s[cmdBase + i] = cmd[i];
     return s;
   }
 

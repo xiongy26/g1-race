@@ -1,4 +1,4 @@
-// 全流程无头回归测试: 全物种(G1 / PM01 / T1 / 天工 / 智元X1)混合比赛。
+// 全流程无头回归测试: 全物种(G1 / PM01 / T1 / 天工 / 智元X1 / MicroDuck)混合比赛。
 // 每台机器人 = 官方 MJCF 模型 + 官方 ONNX 策略 + 契约化观测 + PD, 全部自由物理。
 // 运行: node test-gaits.mjs
 import fs from 'node:fs';
